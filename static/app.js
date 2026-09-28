@@ -38,28 +38,6 @@ function countdown(value) {
 }
 function tone(pct) { return pct >= 90 ? '#db6b64' : pct >= 70 ? '#dfae57' : '#7dbb84'; }
 function esc(value) { const node = document.createElement('span'); node.textContent = String(value ?? ''); return node.innerHTML; }
-function profileProgress(profile, elapsedHours, startMs) {
-  const slots = selectedProfileSlots(profile, startMs);
-  if (!Array.isArray(slots) || slots.length !== 168) return null;
-  const position = Math.max(0, Math.min(168, elapsedHours));
-  const whole = Math.floor(position); const fraction = position - whole;
-  const completed = slots.slice(0, whole).reduce((sum, value) => sum + value, 0);
-  return Math.min(100, (completed + (whole < 168 ? slots[whole] * fraction : 0)) * 100);
-}
-function profileProjection(profile, targetPercent, startMs) {
-  const slots = selectedProfileSlots(profile, startMs);
-  if (!Array.isArray(slots) || targetPercent > 100) return null;
-  let cumulative = 0;
-  for (let slot = 0; slot < slots.length; slot++) {
-    const next = cumulative + slots[slot] * 100;
-    if (next >= targetPercent) {
-      const fraction = slots[slot] > 0 ? (targetPercent - cumulative) / (slots[slot] * 100) : 0;
-      return startMs + (slot + fraction) * 36e5;
-    }
-    cumulative = next;
-  }
-  return null;
-}
 function paceFor(limit, profile = state.profile, observedAt = state.limits?.fetched_at) {
   const durationMs = limit.window_minutes ? limit.window_minutes * 60e3 : limit.kind === 'session' ? 5 * 60 * 60e3 : 7 * 24 * 60 * 60e3;
   const resetMs = new Date(limit.resets_at).getTime();
@@ -68,15 +46,16 @@ function paceFor(limit, profile = state.profile, observedAt = state.limits?.fetc
   if (!Number.isFinite(now) || now < startMs || now >= resetMs || Date.now() >= resetMs) return null;
   const elapsedMs = Math.max(60e3, Math.min(durationMs, now - startMs));
   const remainingMs = Math.max(0, resetMs - now);
-  const historical = durationMs === 168 * 36e5 && profile?.ok;
-  const historicalExpected = historical ? profileProgress(profile, elapsedMs / 36e5, startMs) : null;
-  const expected = historicalExpected ?? Math.max(0, Math.min(100, elapsedMs / durationMs * 100));
+  const weekly = durationMs === 168 * 36e5;
+  const profileSlots = weekly && profile?.ok ? selectedProfileSlots(profile, startMs) : null;
+  const historical = Array.isArray(profileSlots) && profileSlots.length === 168;
   const actualRate = limit.utilization / (elapsedMs / 36e5);
   const sustainableRate = remainingMs > 0 ? (100 - limit.utilization) / (remainingMs / 36e5) : 0;
+  const projection = weekly
+    ? weeklyPaceProjection(historical ? profileSlots : Array(168).fill(1 / 168), limit.utilization, elapsedMs / 36e5, startMs) : null;
+  const expected = projection?.expected ?? Math.max(0, Math.min(100, elapsedMs / durationMs * 100));
   const ratio = expected > 0 ? limit.utilization / expected : 0;
-  const targetProfile = ratio > 0 ? expected + (100 - limit.utilization) / ratio : null;
-  const projectedMs = ratio <= 0 ? null : historical
-    ? profileProjection(profile, targetProfile, startMs)
+  const projectedMs = projection ? projection.projectedMs
     : actualRate > 0 ? startMs + (100 / actualRate) * 36e5 : null;
   const margin = expected - limit.utilization;
   let label = tr('No ritmo'); let className = 'steady';
@@ -85,7 +64,8 @@ function paceFor(limit, profile = state.profile, observedAt = state.limits?.fetc
   else if (ratio < .82) { label = tr('Ritmo tranquilo'); className = 'cool'; }
   return {
     expected, actualRate, sustainableRate, projectedMs, margin, label, className, historical,
-    pressure: ratio,
+    pressure: ratio, projectionRatio: projection?.projectionRatio ?? ratio,
+    preliminary: Boolean(projection?.preliminary || (historical && profileReliability(profile) < 1)),
     futureBudgetRatio: expected < 100 ? (100 - limit.utilization) / (100 - expected) : 0,
     reachesBeforeReset: projectedMs && projectedMs < resetMs,
   };
@@ -201,7 +181,7 @@ function renderLimits() {
     const paceMarkup = pace ? `<div class="pace-head"><span class="pace-badge ${pace.className}">${pace.label}</span><span>${pace.historical ? tr('ideal do modo') : tr('ideal agora')}: ${pace.expected.toFixed(0)}%</span></div>
       <div class="bar pace-bar" style="--bar-color:${color}"><i style="--value:${pct}%"></i><b style="--target:${pace.expected}%" title="${tr('ritmo ideal')}"></b></div>
       <div class="pace-grid"><span><small>${pace.historical ? tr('Pressão vs padrão') : tr('Ritmo médio')}</small><strong>${pace.historical ? pace.pressure.toFixed(2) + 'x' : pace.actualRate.toFixed(1) + '%/h'}</strong></span><span><small>${pace.historical ? tr('Folga futura') : tr('Pode gastar')}</small><strong>${pace.historical ? pace.futureBudgetRatio.toFixed(2) + 'x' : pace.sustainableRate.toFixed(1) + '%/h'}</strong></span><span><small>${tr('Margem')}</small><strong>${pace.margin >= 0 ? '+' : ''}${pace.margin.toFixed(0)} pp</strong></span></div>
-      <p class="projection ${pace.reachesBeforeReset ? 'warning' : ''}">${pace.reachesBeforeReset ? `${tr("Mantendo seu padrão, chega a 100%")} ${clock(pace.projectedMs)}` : tr('Mantendo seu padrão, não chega a 100% antes do reset')}</p>
+      <p class="projection ${pace.reachesBeforeReset ? 'warning' : ''}">${pace.reachesBeforeReset ? `${tr("Mantendo seu padrão, chega a 100%")} ${clock(pace.projectedMs)}` : tr('Mantendo seu padrão, não chega a 100% antes do reset')}${pace.preliminary ? ` · ${tr('estimativa preliminar')}` : ''}</p>
       ${pace.historical ? `<p class="profile-source">${paceModeLabel()} · ${tr("janela de até")} ${state.profile.lookback_days} ${tr("dias")} · ${state.profile.weekly.business_days_share.toFixed(0)}% ${tr("seg–sex")}</p>` : ''}` : '';
     return `<article class="limit panel" style="--ring-color:${color}">
       <div class="limit-title"><strong>${esc(limit.kind === 'session' ? tr('Sessão') + (limit.label.includes('5h') ? ' · 5h' : '') : limit.kind.startsWith('weekly') ? tr('Semanal') + (limit.model ? ' · ' + limit.model : limit.label.includes(' · ') ? ' · ' + limit.label.split(' · ').slice(1).join(' · ') : '') : limit.label)}</strong><span>${tr('plano oficial')}</span></div>
@@ -223,7 +203,7 @@ function renderWeeklyCurve() {
   }
 
   const elapsedHours = Math.max(0, Math.min(168, (data.observedMs - data.startMs) / 36e5));
-  const expectedNow = profileProgress(state.profile, elapsedHours, data.startMs);
+  const expectedNow = slotProgress(slots, elapsedHours);
   const hourly = Array(168).fill(0);
   for (const row of data.timeline) {
     const slot = Math.floor((row.bucket_ms - data.startMs) / 36e5);

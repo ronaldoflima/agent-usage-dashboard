@@ -210,6 +210,20 @@ weekly projections. It does not change official utilization, the observed usage
 curve, or the five-hour session calculation. No profile rebuild is needed to
 switch modes.
 
+Weekly projections are deliberately conservative about thin evidence:
+
+- A profile with fewer than 168 active hours (`sample_hours`) is blended with
+  the linear curve in proportion to its sample size, so one busy hour in a short
+  history cannot dominate the expected curve. Profiles with 168 or more active
+  hours, or without `sample_hours`, are used as is.
+- The displayed pressure is the raw ratio of official usage to expected usage.
+  The projected date instead uses `(used + 10) / (expected + 10)`, which starts
+  near the target pace and converges to the raw ratio as the cycle accumulates
+  expected mass. A burst right after a reset therefore no longer extrapolates a
+  4–5× multiplier to the rest of the week.
+- While the expected mass is below 10 percentage points, or the profile is
+  blended, the projection is labeled as preliminary.
+
 The browser aligns the profile's calendar-hour weights to each official weekly
 window, including model-specific windows and resets that change day or time.
 Minute offsets are interpolated at the profile's hourly resolution. Reset dates

@@ -88,7 +88,7 @@ function renderProviders() {
       <div class="limit-meta"><span>${tr('restam')} ${(100 - pct).toFixed(0)}%</span><span>${tr('reset em')} ${countdown(limit.resets_at)} · ${formatDate(limit.resets_at)}</span></div>
       ${pace ? `<div class="pace-head"><span class="pace-badge ${pace.className}">${pace.label}</span><span>${tr('ideal do modo')}: ${pace.expected.toFixed(0)}%</span></div>
         <div class="pace-grid"><span><small>${tr('Pressão vs padrão')}</small><strong>${pace.pressure.toFixed(2)}×</strong></span><span><small>${tr('Pode gastar')}</small><strong>${pace.sustainableRate.toFixed(1)}%/h</strong></span><span><small>${tr('Margem')}</small><strong>${pace.margin.toFixed(0)} pp</strong></span></div>
-        <p class="projection ${pace.reachesBeforeReset ? 'warning' : ''}">${pace.reachesBeforeReset ? `${tr('Mantendo seu padrão, chega a 100%')} ${clock(pace.projectedMs)}` : tr('Mantendo seu padrão, não chega a 100% antes do reset')}</p>
+        <p class="projection ${pace.reachesBeforeReset ? 'warning' : ''}">${pace.reachesBeforeReset ? `${tr('Mantendo seu padrão, chega a 100%')} ${clock(pace.projectedMs)}` : tr('Mantendo seu padrão, não chega a 100% antes do reset')}${pace.preliminary ? ` · ${tr('estimativa preliminar')}` : ''}</p>
         <p class="profile-source">${pace.historical ? paceModeLabel() : tr('Estimativa linear')} · ${tr('Estimativa na data do snapshot')}</p>`
         : `<p class="projection">${tr('Janela encerrada ou dados insuficientes. Sincronize para atualizar.')}</p>`}
     </article>`;
@@ -134,7 +134,7 @@ function renderCodexCurve() {
   const pace = paceFor(limit, profile, limits.fetched_at);
   const observedMs = Date.parse(limits.fetched_at);
   const projection = pace && observedMs >= start && observedMs < reset
-    ? [{ ms: observedMs, pct: limit.utilization }, ...expected.filter(p => p.ms > observedMs).map(p => ({ ms: p.ms, pct: p.pct * pace.pressure }))] : [];
+    ? [{ ms: observedMs, pct: limit.utilization }, ...expected.filter(p => p.ms > observedMs).map(p => ({ ms: p.ms, pct: limit.utilization + (p.pct - pace.expected) * pace.projectionRatio }))] : [];
   const grid = [0, 25, 50, 75, 100].map(p => `<line x1="${left}" y1="${y(p)}" x2="583" y2="${y(p)}" class="curve-grid-line"/><text x="30" y="${y(p) + 4}" text-anchor="end" class="curve-axis-label">${p}%</text>`).join('');
   const labels = [0, 2, 4, 6].map(day => {
     const ms = start + day * 24 * 36e5;

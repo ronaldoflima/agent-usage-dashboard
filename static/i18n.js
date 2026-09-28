@@ -57,6 +57,7 @@ const DYNAMIC = {
   'Snapshot local': ['Local snapshot', 'Captura local'],
   'Dados desatualizados': ['Stale data', 'Datos desactualizados'],
   'Estimativa linear': ['Linear estimate', 'Estimación lineal'],
+  'estimativa preliminar': ['preliminary estimate', 'estimación preliminar'],
   'Estimativa na data do snapshot': ['Estimate as of the snapshot', 'Estimación a la fecha de la captura'],
   'Janela encerrada ou dados insuficientes. Sincronize para atualizar.': ['Window ended or insufficient data. Sync to update.', 'Ventana finalizada o datos insuficientes. Sincroniza para actualizar.'],
   'Codex indisponível. Use Sync ou verifique o login do CLI.': ['Codex unavailable. Sync or check your CLI login.', 'Codex no disponible. Sincroniza o comprueba el acceso del CLI.'],
