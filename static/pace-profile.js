@@ -4,6 +4,8 @@ const MIN_PROFILE_HOURS = 168;
 // Expected-percentage mass that anchors projections to the target pace (ratio 1)
 // until the current cycle has accumulated comparable evidence.
 const PRIOR_PACE_MASS = 10;
+// Share of the balanced-weekdays curve mixed into the historical one in 'blended' mode.
+const BLEND_WEIGHT = 0.5;
 
 function profileReliability(profile) {
   const hours = profile?.sample_hours;
@@ -17,7 +19,7 @@ function paceProfileSlots(profile, mode) {
   if (!Array.isArray(raw) || raw.length !== 168) return null;
   const reliability = profileReliability(profile);
   const slots = reliability < 1 ? raw.map(value => reliability * value + (1 - reliability) / 168) : raw;
-  if (mode !== 'equal_weekdays') return slots;
+  if (mode !== 'equal_weekdays' && mode !== 'blended') return slots;
   const resetHour = weekly.reset_weekday * 24 + weekly.reset_hour;
   const hourlyMeans = Array(24).fill(0);
   slots.forEach((value, slot) => {
@@ -26,7 +28,8 @@ function paceProfileSlots(profile, mode) {
   });
   return slots.map((value, slot) => {
     const hour = (resetHour + slot) % 168;
-    return Math.floor(hour / 24) < 5 ? hourlyMeans[hour % 24] : value;
+    if (Math.floor(hour / 24) >= 5) return value;
+    return mode === 'blended' ? (1 - BLEND_WEIGHT) * value + BLEND_WEIGHT * hourlyMeans[hour % 24] : hourlyMeans[hour % 24];
   });
 }
 

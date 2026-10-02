@@ -3,14 +3,17 @@ state.providerView = 'both';
 try { const saved = localStorage.getItem('providerView'); if (['both', 'claude', 'codex'].includes(saved)) state.providerView = saved; } catch {}
 state.collection = { claude: true, codex: true };
 try { const saved = JSON.parse(localStorage.getItem('collectionProviders')); for (const provider of ['claude', 'codex']) if (typeof saved?.[provider] === 'boolean') state.collection[provider] = saved[provider]; } catch {}
+const PACE_MODES = ['historical', 'blended', 'equal_weekdays'];
 state.paceMode = 'historical';
-try { if (localStorage.getItem('paceMode') === 'equal_weekdays') state.paceMode = 'equal_weekdays'; } catch {}
+try { const saved = localStorage.getItem('paceMode'); if (PACE_MODES.includes(saved)) state.paceMode = saved; } catch {}
 function selectedProfileSlots(profile, startMs) { return alignedPaceSlots(profile, state.paceMode, startMs); }
-function paceModeLabel() { return state.paceMode === 'equal_weekdays' ? tr('Seg–sex equilibrado') : tr('Perfil histórico'); }
+function paceModeLabel() { return { equal_weekdays: tr('Seg–sex equilibrado'), blended: tr('Histórico + equilibrado') }[state.paceMode] || tr('Perfil histórico'); }
 function renderPaceMode() {
   document.getElementById('paceMode').value = state.paceMode;
   const share = (state.providerView === 'codex' ? state.codex?.activity?.profile : state.profile)?.weekly?.business_days_share;
-  document.getElementById('paceModeNote').textContent = state.paceMode === 'equal_weekdays'
+  document.getElementById('paceModeNote').textContent = state.paceMode === 'blended'
+    ? tr('Média de 50% entre o perfil histórico e o Seg–sex equilibrado: reduz o ruído de poucas semanas sem ignorar que alguns dias pesam mais.')
+    : state.paceMode === 'equal_weekdays'
     ? `${tr("Mesmo peso para cada dia útil")}${Number.isFinite(share) ? ` (${(share / 5).toFixed(2)}% ${tr("da semana")})` : ''}, ${tr("com a média por horário. Sábado e domingo preservados. É uma hipótese de planejamento, não uma correção do histórico.")}`
     : tr('Distribuição histórica por dia e horário, incluindo períodos em que você pode ter economizado cota.');
   document.getElementById('expectedCurveLabel').textContent = `${tr("Curva esperada")} · ${paceModeLabel()}`;
@@ -316,7 +319,7 @@ document.getElementById('language').addEventListener('change', event => {
   render(); renderSyncTimestamp();
 });
 document.getElementById('paceMode').addEventListener('change', event => {
-  state.paceMode = event.target.value === 'equal_weekdays' ? 'equal_weekdays' : 'historical';
+  state.paceMode = PACE_MODES.includes(event.target.value) ? event.target.value : 'historical';
   try { localStorage.setItem('paceMode', state.paceMode); } catch {}
   render();
 });

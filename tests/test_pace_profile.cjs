@@ -42,6 +42,17 @@ test('balanced workdays preserve weekends and total, including reset-day split',
   }
 });
 
+test('blended mode is the midpoint of historical and balanced, preserving total and weekends', () => {
+  const raw = Array.from({ length: 168 }, (_, i) => (i % 24 + 1) * (1 + Math.floor((i + 19) % 168 / 24)));
+  const total = raw.reduce((a, b) => a + b, 0);
+  const profile = { weekly: { slots: raw.map(value => value / total), reset_weekday: 5, reset_hour: 19 } };
+  const historical = paceProfileSlots(profile, 'historical');
+  const balanced = paceProfileSlots(profile, 'equal_weekdays');
+  const blended = paceProfileSlots(profile, 'blended');
+  blended.forEach((value, slot) => assert.ok(Math.abs(value - (historical[slot] + balanced[slot]) / 2) < 1e-12));
+  assert.ok(Math.abs(blended.reduce((a, b) => a + b, 0) - 1) < 1e-12);
+});
+
 test('missing profile falls back and zero activity stays zero', () => {
   assert.equal(paceProfileSlots(null, 'equal_weekdays'), null);
   assert.equal(paceProfileSlots({ weekly: { slots: [] } }, 'equal_weekdays'), null);
