@@ -32,6 +32,29 @@ const TRANSLATIONS = {
   }
 };
 const DYNAMIC = {
+  'Com projetos selecionados, os valores das sessões e o gráfico consideram apenas a atividade nesses projetos.': ['With projects selected, session values and the chart include only activity in those projects.', 'Con proyectos seleccionados, los valores de las sesiones y el gráfico incluyen solo la actividad en esos proyectos.'],
+  'Clique em um ou vários projetos para destacar sua participação no gráfico acima e filtrar as sessões ao lado.': ['Click one or more projects to highlight their share in the chart above and filter the sessions alongside.', 'Haz clic en uno o varios proyectos para destacar su participación en el gráfico superior y filtrar las sesiones de al lado.'],
+  'projetos selecionados': ['selected projects', 'proyectos seleccionados'],
+  'Seleção': ['Selection', 'Selección'],
+  'Todas as sessões · selecione projetos ou sessões abaixo para comparar com o total.': ['All sessions · select projects or sessions below to compare with the total.', 'Todas las sesiones · selecciona proyectos o sesiones abajo para comparar con el total.'],
+  'Clique em um ou vários projetos para destacar sua participação no gráfico acima.': ['Click one or more projects to highlight their share in the chart above.', 'Haz clic en uno o varios proyectos para destacar su participación en el gráfico superior.'],
+  'Volume por projeto': ['Volume by project', 'Volumen por proyecto'],
+  'PROJETOS': ['PROJECTS', 'PROYECTOS'],
+  'sessões': ['sessions', 'sesiones'],
+  'Listagem compacta': ['Compact list', 'Lista compacta'],
+  'Listagem normal': ['Normal list', 'Lista normal'],
+  'Worktrees e subpastas são agrupadas pelo repositório principal.': ['Worktrees and subfolders are grouped by the main repository.', 'Los worktrees y las subcarpetas se agrupan por el repositorio principal.'],
+  'Limpar seleção': ['Clear selection', 'Limpiar selección'],
+  'Clique em uma ou várias sessões para destacar sua participação no gráfico acima.': ['Click one or more sessions to highlight their share in the chart above.', 'Haz clic en una o varias sesiones para destacar su participación en el gráfico superior.'],
+  'O título é o nome da pasta de trabalho. O ID abaixo distingue sessões da mesma pasta.': ['The title is the working folder name. The ID below distinguishes sessions in the same folder.', 'El título es el nombre de la carpeta de trabajo. El ID inferior distingue sesiones de la misma carpeta.'],
+  'sessões selecionadas': ['selected sessions', 'sesiones seleccionadas'],
+  'do total no intervalo': ['of the total in this range', 'del total en el intervalo'],
+  'Restante esmaecido': ['Remainder dimmed', 'Resto atenuado'],
+  'Todas as sessões · selecione abaixo para comparar com o total.': ['All sessions · select below to compare with the total.', 'Todas las sesiones · selecciona abajo para comparar con el total.'],
+  'Outras sessões': ['Other sessions', 'Otras sesiones'],
+  'Sessões selecionadas': ['Selected sessions', 'Sesiones seleccionadas'],
+  'Todas as sessões': ['All sessions', 'Todas las sesiones'],
+  'Destacar no gráfico': ['Highlight in chart', 'Destacar en el gráfico'],
   'Visão geral': ['Overview', 'Resumen'], 'Visualização': ['View', 'Vista'],
   'Sincronização': ['Synchronization', 'Sincronización'],
   'Coletar dados de': ['Collect data from', 'Recopilar datos de'],
@@ -79,6 +102,8 @@ const DYNAMIC = {
   'janela de até': ['window up to', 'ventana de hasta'], 'dias': ['days', 'días'], 'seg–sex': ['Mon–Fri', 'lun–vie'], 'plano oficial': ['official plan', 'plan oficial'], 'utilizado': ['used', 'utilizado'], 'restam': ['remaining', 'restante'], 'reset em': ['resets in', 'se reinicia en'],
   'A API não retornou janelas de limite ativas.': ['The API returned no active limit windows.', 'La API no devolvió períodos de límite activos.'], 'Gere o perfil histórico para visualizar a curva.': ['Generate the historical profile to view the curve.', 'Genera el perfil histórico para ver la curva.'],
   'usado': ['used', 'utilizado'], 'ideal': ['target', 'objetivo'], 'Sem atividade neste intervalo.': ['No activity in this range.', 'Sin actividad en este intervalo.'], 'processados': ['processed', 'procesados'], 'respostas': ['responses', 'respuestas'], 'Base perfil': ['Profile baseline', 'Base del perfil'], 'Cache escrito': ['Cache written', 'Caché escrita'], 'Cache lido': ['Cache read', 'Caché leída'], 'Sem dados.': ['No data.', 'Sin datos.'],
+  'Arraste no gráfico para filtrar um período. Use os botões de período para desfazer.': ['Drag on the chart to filter a period. Use the period buttons to reset.', 'Arrastra en el gráfico para filtrar un período. Usa los botones de período para restablecer.'],
+  'Diferença': ['Difference', 'Diferencia'],
   'Sessão': ['Session', 'Sesión'], 'Semanal': ['Weekly', 'Semanal'], 'modelo': ['model', 'modelo']
 };
 for (const [key, [english, spanish]] of Object.entries(DYNAMIC)) { TRANSLATIONS.en[key] = english; TRANSLATIONS.es[key] = spanish; }

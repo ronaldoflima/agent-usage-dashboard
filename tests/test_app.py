@@ -67,6 +67,60 @@ class UsageIndexTest(unittest.TestCase):
         self.assertEqual(result["totals"]["fresh_tokens"], 60)
         self.assertEqual(result["totals"]["total_tokens"], 160)
 
+    def test_session_breakdown_preserves_totals_and_range(self):
+        self.write()
+        event = json.loads(self.log.read_text().splitlines()[0])
+        event['sessionId'] = 'session-2'
+        event['message']['id'] = 'msg_2'
+        event['message']['usage']['output_tokens'] = 70
+        with self.log.open('a') as handle:
+            handle.write(json.dumps(event) + '\n')
+        self.write(message_id='outside', timestamp='2026-09-23T10:00:00Z')
+        self.index.refresh()
+        from datetime import datetime
+        start = int(datetime.fromisoformat('2026-09-22T10:00:00+00:00').timestamp() * 1000)
+        result = self.index.dashboard(start, start + 60_000, 60_000)
+        self.assertEqual(len(result['session_timeline']), 2)
+        self.assertEqual({r['session_id'] for r in result['session_timeline']}, {'session-1', 'session-2'})
+        for key in ('input_tokens', 'output_tokens', 'cache_creation_tokens', 'cache_read_tokens', 'total_tokens'):
+            self.assertEqual(sum(r[key] for r in result['session_timeline']), result['totals'][key])
+            self.assertEqual(sum(r[key] for r in result['timeline']), result['totals'][key])
+        self.assertEqual(result['totals']['messages'], 2)
+
+    def test_projects_group_worktrees_subfolders_and_separate_same_names(self):
+        repo = self.root / 'main' / 'demo'
+        git = repo / '.git'
+        git.mkdir(parents=True)
+        metadata = git / 'worktrees' / 'feature'
+        metadata.mkdir(parents=True)
+        (metadata / 'commondir').write_text('../..')
+        worktree = self.root / 'other' / 'feature'
+        worktree.mkdir(parents=True)
+        (worktree / '.git').write_text(f'gitdir: {metadata}')
+        separate = self.root / 'separate' / 'demo'
+        (separate / '.git').mkdir(parents=True)
+        self.write()
+        template = json.loads(self.log.read_text().splitlines()[0])
+        self.log.write_text('')
+        for i, cwd in enumerate((repo, worktree, worktree / 'src', separate)):
+            event = json.loads(json.dumps(template))
+            event['cwd'] = str(cwd)
+            event['sessionId'] = f'session-{i}'
+            event['message']['id'] = f'msg-{i}'
+            with self.log.open('a') as handle:
+                handle.write(json.dumps(event) + '\n')
+        self.index.refresh()
+        data = self.index.dashboard(0, 2_000_000_000_000, 60_000)
+        self.assertEqual(len(data['projects']), 2)
+        self.assertEqual(data['projects'][0]['project_id'], str(repo))
+        self.assertEqual(data['projects'][0]['sessions'], 3)
+        self.assertEqual(len(data['projects'][0]['folders']), 3)
+        self.assertEqual(data['projects'][1]['project_id'], str(separate))
+        self.assertEqual(sum(row['total_tokens'] for row in data['session_timeline'] if row['project_id'] == str(repo)), data['projects'][0]['total_tokens'])
+        self.assertEqual({row['project_id'] for row in data['session_timeline']}, {str(repo), str(separate)})
+        for key in ('messages', 'input_tokens', 'output_tokens', 'cache_creation_tokens', 'cache_read_tokens', 'total_tokens'):
+            self.assertEqual(sum(row[key] for row in data['projects']), data['totals'][key])
+
     def test_incremental_refresh(self):
         self.write()
         first = self.index.refresh()

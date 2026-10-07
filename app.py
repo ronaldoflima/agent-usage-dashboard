@@ -47,6 +47,33 @@ def safe_int(value: Any) -> int:
         return 0
 
 
+def project_root(cwd: str) -> str:
+    """Resolve linked worktrees and repository subfolders without running Git."""
+    if not cwd:
+        return ''
+    path = Path(cwd).expanduser()
+    for folder in (path, *path.parents):
+        git = folder / '.git'
+        try:
+            if git.is_dir():
+                return str(folder.resolve())
+            if git.is_file():
+                text = git.read_text().strip()
+                if text.startswith('gitdir:'):
+                    git_dir = (folder / text.split(':', 1)[1].strip()).resolve()
+                    common = git_dir / 'commondir'
+                    if common.is_file():
+                        return str((git_dir / common.read_text().strip()).resolve().parent)
+                    return str(folder.resolve())
+        except (OSError, RuntimeError):
+            continue
+    # Keep deleted conventional in-repository worktrees attached to their project.
+    for marker in ('/.claude/worktrees/', '/.worktrees/', '/worktrees/'):
+        if marker in str(path):
+            return str(path).split(marker, 1)[0]
+    return str(path)
+
+
 class UsageIndex:
     """Incremental, content-free index over ~/.claude/projects JSONL files."""
 
@@ -223,7 +250,7 @@ class UsageIndex:
                      FROM usage_events WHERE {where}
                      GROUP BY session_id ORDER BY
                        SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) DESC
-                     LIMIT 25""",
+                     """,
                 params,
             )]
             timeline = [dict(row) for row in self.connection.execute(
@@ -232,13 +259,48 @@ class UsageIndex:
                      GROUP BY bucket_ms, model ORDER BY bucket_ms, model""",
                 (bucket_ms, bucket_ms, start_ms, end_ms),
             )]
+            session_timeline = [dict(row) for row in self.connection.execute(
+                f"""SELECT (timestamp_ms / ?) * ? AS bucket_ms, session_id, cwd, {sums}
+                     FROM usage_events WHERE {where}
+                     GROUP BY bucket_ms, session_id, cwd ORDER BY bucket_ms, session_id, cwd""",
+                (bucket_ms, bucket_ms, start_ms, end_ms),
+            )]
+            project_usage = [dict(row) for row in self.connection.execute(
+                f"SELECT cwd, session_id, {sums} FROM usage_events WHERE {where} GROUP BY cwd, session_id", params
+            )]
             first_event = self.connection.execute("SELECT MIN(timestamp_ms) FROM usage_events").fetchone()[0]
             last_event = self.connection.execute("SELECT MAX(timestamp_ms) FROM usage_events").fetchone()[0]
 
-        for collection in (models, sessions, timeline):
+        for collection in (models, sessions, timeline, session_timeline):
             for item in collection:
                 item["fresh_tokens"] = item["input_tokens"] + item["output_tokens"] + item["cache_creation_tokens"]
                 item["total_tokens"] = item["fresh_tokens"] + item["cache_read_tokens"]
+        projects_by_root = {}
+        roots = {}
+        keys = ('messages', 'input_tokens', 'output_tokens', 'cache_read_tokens',
+                'cache_creation_tokens', 'thinking_tokens')
+        for row in project_usage:
+            cwd = row['cwd']
+            if cwd not in roots:
+                roots[cwd] = project_root(cwd)
+            root = roots[cwd]
+            item = projects_by_root.setdefault(root, {
+                'project': Path(root).name if root else 'unknown', 'project_id': root,
+                'cwd': root, '_sessions': set(), '_folders': set(), **dict.fromkeys(keys, 0),
+            })
+            item['_sessions'].add(row['session_id'])
+            item['_folders'].add(cwd)
+            for key in keys:
+                item[key] += row[key]
+        for row in session_timeline:
+            row['project_id'] = roots[row['cwd']]
+        projects = list(projects_by_root.values())
+        for item in projects:
+            item['sessions'] = len(item.pop('_sessions'))
+            item['folders'] = sorted(item.pop('_folders'))
+            item['fresh_tokens'] = item['input_tokens'] + item['output_tokens'] + item['cache_creation_tokens']
+            item['total_tokens'] = item['fresh_tokens'] + item['cache_read_tokens']
+        projects.sort(key=lambda item: (-item['total_tokens'], item['project_id']))
         totals["fresh_tokens"] = totals["input_tokens"] + totals["output_tokens"] + totals["cache_creation_tokens"]
         totals["total_tokens"] = totals["fresh_tokens"] + totals["cache_read_tokens"]
         return {
@@ -246,8 +308,10 @@ class UsageIndex:
             "coverage": {"first_event_ms": first_event, "last_event_ms": last_event},
             "totals": totals,
             "models": models,
+            "projects": projects,
             "sessions": sessions,
             "timeline": timeline,
+            "session_timeline": session_timeline,
         }
 
 

@@ -103,6 +103,7 @@
         <span><i class="now-dot"></i>Percentual oficial agora</span>
       </div>
       <div id="weeklyCurve" class="weekly-curve" role="img" data-i18n-aria="Curva acumulada de uso semanal" aria-label="Cumulative weekly usage curve"></div>
+      <p class="curve-note">Arraste no gráfico para filtrar um período. Use os botões de período para desfazer.</p>
       <p class="curve-note">A curva pessoal usa somente ciclos encerrados. A linha atual vem dos tokens locais e é calibrada pelo percentual oficial mais recente.</p>
     </section>
     <section class="panel weekly-curve-panel codex-section" data-provider="codex">
@@ -116,7 +117,8 @@
     <section class="codex-section metrics-section" data-provider="codex" aria-labelledby="codexActivityTitle">
       <div class="section-head"><div><p class="eyebrow">CODEX · LOCAL</p><h2 id="codexActivityTitle">Atividade por modelo e sessão</h2></div><p class="chart-note">Somente registros deste dispositivo. Cache já está incluído na entrada do Codex e é separado abaixo.</p></div>
       <div id="codexMetrics" class="metric-grid"></div>
-      <div class="split"><article class="panel ranking"><h2>Volume por modelo</h2><div id="codexModels"></div></article><article class="panel ranking"><h2>Volume por sessão</h2><div id="codexSessions"></div></article></div>
+      <div class="ranking-toolbar"><button id="codexCompactToggle" type="button" aria-pressed="false">Listagem compacta</button></div>
+      <div class="split"><div class="ranking-stack"><article class="panel ranking"><h2>Volume por projeto</h2><div id="codexProjects"></div></article><article class="panel ranking"><h2>Volume por modelo</h2><div id="codexModels"></div></article></div><article class="panel ranking"><h2>Volume por sessão</h2><div id="codexSessions"></div></article></div>
     </section>
 
     <section class="metrics-section" data-provider="claude" aria-labelledby="metricsTitle">
@@ -141,17 +143,30 @@
         <div><p class="eyebrow">LINHA DO TEMPO</p><h2>Composição da atividade</h2></div>
         <p class="chart-note">As quatro parcelas são exibidas juntas. Thinking já está contido em output.</p>
       </div>
+      <div class="session-controls"><p id="sessionSelectionSummary" aria-live="polite"></p><button id="clearSessionSelection" type="button" hidden>Limpar seleção</button></div>
       <div id="legend" class="legend"></div>
       <div id="timeline" class="timeline"></div>
     </section>
 
+    <div class="ranking-toolbar" data-provider="claude"><button id="compactToggle" type="button" aria-pressed="false">Listagem compacta</button></div>
     <section class="split" data-provider="claude">
+      <div class="ranking-stack">
+      <article class="panel ranking">
+        <div class="section-head"><div><p class="eyebrow">PROJETOS</p><h2>Volume por projeto</h2></div></div>
+        <p class="session-help">Worktrees e subpastas são agrupadas pelo repositório principal.</p>
+        <p class="session-help">Clique em um ou vários projetos para destacar sua participação no gráfico acima e filtrar as sessões ao lado.</p>
+        <div id="projects"></div>
+      </article>
       <article class="panel ranking">
         <div class="section-head"><div><p class="eyebrow">MODELOS</p><h2>Volume por modelo</h2></div></div>
         <div id="models"></div>
       </article>
+      </div>
       <article class="panel ranking">
         <div class="section-head"><div><p class="eyebrow">SESSÕES</p><h2>Volume por sessão</h2></div></div>
+        <p class="session-help">Clique em uma ou várias sessões para destacar sua participação no gráfico acima.</p>
+        <p class="session-help">Com projetos selecionados, os valores das sessões e o gráfico consideram apenas a atividade nesses projetos.</p>
+        <p class="session-help">O título é o nome da pasta de trabalho. O ID abaixo distingue sessões da mesma pasta.</p>
         <div id="sessionList"></div>
       </article>
     </section>

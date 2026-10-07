@@ -99,6 +99,7 @@ function renderProviders() {
     ['Output', 'output_tokens'], [tr('Leitura de cache'), 'cache_read_tokens'], ['Thinking', 'thinking_tokens']];
   document.getElementById('codexMetrics').innerHTML = metrics.map(([label, key]) =>
     `<article class="metric panel"><span>${label}</span><strong>${activity?.ok ? formatTokens(totals[key]) : '—'}</strong><small>${key === 'thinking_tokens' ? tr('parte do output; não somar novamente') : tr('no intervalo selecionado')}</small></article>`).join('');
+  renderRanking('codexProjects', activity?.projects || [], 'project', true);
   renderRanking('codexModels', activity?.models || [], 'model', true);
   renderRanking('codexSessions', activity?.sessions || [], 'session', true);
 }

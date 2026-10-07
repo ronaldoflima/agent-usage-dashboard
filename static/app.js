@@ -1,4 +1,16 @@
 const state = { range: '5h', custom: null, data: null, limits: null, profile: null, weeklyData: null };
+state.selectedSessions = new Set();
+state.selectedProjects = new Set();
+state.compactRankings = false;
+try { state.compactRankings = localStorage.getItem('compactRankings') === 'true'; } catch {}
+function renderRankingMode() {
+  document.body.classList.toggle('compact-rankings', state.compactRankings);
+  for (const id of ['compactToggle', 'codexCompactToggle']) {
+    const button = document.getElementById(id);
+    button.setAttribute('aria-pressed', String(state.compactRankings));
+    button.textContent = tr(state.compactRankings ? 'Listagem normal' : 'Listagem compacta');
+  }
+}
 state.providerView = 'both';
 try { const saved = localStorage.getItem('providerView'); if (['both', 'claude', 'codex'].includes(saved)) state.providerView = saved; } catch {}
 state.collection = { claude: true, codex: true };
@@ -134,7 +146,7 @@ async function load(custom, sync = false, force = false) {
 }
 
 function render() {
-  renderProviderView(); renderPaceMode();
+  renderRankingMode(); renderProviderView(); renderPaceMode();
   if (state.providerView === 'claude') {
     if (state.data?.ok) renderClaude();
     else renderLimits();
@@ -147,6 +159,11 @@ function render() {
 
 function renderClaude() {
   const d = state.data, t = d.totals;
+  const available = new Set(d.sessions.map(row => row.session_id));
+  for (const id of state.selectedSessions) if (!available.has(id)) state.selectedSessions.delete(id);
+  const availableProjects = new Set((d.projects || []).map(row => row.project_id));
+  for (const id of state.selectedProjects) if (!availableProjects.has(id)) state.selectedProjects.delete(id);
+  pruneHiddenSessionSelection();
   document.getElementById('totalTokens').textContent = formatTokens(t.total_tokens);
   document.getElementById('freshTokens').textContent = formatTokens(t.fresh_tokens);
   document.getElementById('inputTokens').textContent = formatTokens(t.input_tokens);
@@ -157,7 +174,7 @@ function renderClaude() {
   document.getElementById('sessions').textContent = exact.format(t.sessions || 0);
   document.getElementById('messages').textContent = exact.format(t.messages || 0);
   document.getElementById('coverage').textContent = d.coverage.last_event_ms ? `${tr("último evento")} ${formatDate(d.coverage.last_event_ms)}` : tr('sem eventos');
-  renderPaceMode(); renderLimits(); renderWeeklyCurve(); renderTimeline(); renderRanking('models', d.models, 'model'); renderRanking('sessionList', d.sessions, 'session');
+  renderPaceMode(); renderLimits(); renderWeeklyCurve(); renderTimeline(); renderRanking('projects', d.projects || [], 'project'); renderRanking('models', d.models, 'model'); renderRanking('sessionList', d.sessions, 'session');
 }
 
 function renderSyncTimestamp() {
@@ -198,6 +215,7 @@ function renderLimits() {
 function renderWeeklyCurve() {
   const root = document.getElementById('weeklyCurve');
   const summary = document.getElementById('weeklyCurveSummary');
+  root.onpointermove = root.onpointerdown = root.onpointerup = root.onpointerleave = root.onpointercancel = root.onlostpointercapture = null;
   const data = state.weeklyData; const slots = selectedProfileSlots(state.profile, data?.startMs);
   if (!data || !Array.isArray(slots) || slots.length !== 168) {
     root.innerHTML = `<div class="empty">${tr('Gere o perfil histórico para visualizar a curva.')}</div>`;
@@ -252,9 +270,13 @@ function renderWeeklyCurve() {
   }).join('');
   const currentX = x(elapsedHours), currentY = y(data.official);
 
+  const selectedStart = Math.max(0, (state.custom?.start - data.startMs) / 36e5);
+  const selectedEnd = Math.min(168, (state.custom?.end - data.startMs) / 36e5);
+  const hasSelection = Number.isFinite(selectedStart) && selectedStart < selectedEnd;
   root.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
     <defs><linearGradient id="actualArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#7dbb84" stop-opacity=".28"/><stop offset="100%" stop-color="#7dbb84" stop-opacity="0"/></linearGradient></defs>
     ${horizontal}${vertical}
+    <rect class="curve-selection" x="${hasSelection ? x(selectedStart) : left}" y="${top}" width="${hasSelection ? x(selectedEnd) - x(selectedStart) : 0}" height="${plotHeight}" visibility="${hasSelection ? 'visible' : 'hidden'}"/>
     <path d="${areaPath}" fill="url(#actualArea)"/>
     <path d="${path(expectedPoints)}" class="curve-expected-line"/>
     <path d="${actualPath}" class="curve-actual-line"/>
@@ -262,7 +284,114 @@ function renderWeeklyCurve() {
     <circle cx="${currentX}" cy="${currentY}" r="6" class="curve-now-point"/>
     <circle cx="${currentX}" cy="${y(expectedNow)}" r="4" class="curve-expected-point"/>
     ${quotaSamples(state.snapshots?.claude, data.limit).map(sample => `<circle cx="${x((sample.observed_ms - data.startMs) / 36e5)}" cy="${y(sample.utilization)}" r="3" class="curve-now-point"><title>${esc(formatDate(sample.observed_ms))} · ${sample.utilization}%</title></circle>`).join('')}
-  </svg>`;
+    <g class="curve-hover" visibility="hidden">
+      <line y1="${top}" y2="${height - bottom}" class="curve-hover-line"/>
+      <circle r="5" class="curve-expected-point"/>
+      <circle r="5" class="curve-now-point"/>
+    </g>
+  </svg><div class="curve-tooltip" role="tooltip" hidden></div>`;
+
+  const dateFormatter = new Intl.DateTimeFormat(locale(), {
+    weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+  const percent = new Intl.NumberFormat(locale(), { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+  const interpolate = (points, slot) => {
+    const next = points.findIndex(point => point.slot >= slot);
+    if (next <= 0) return points[0].value;
+    const a = points[next - 1], b = points[next];
+    return a.value + (b.value - a.value) * (slot - a.slot) / (b.slot - a.slot);
+  };
+  const hideTooltip = () => {
+    root.querySelector('.curve-tooltip').hidden = true;
+    root.querySelector('.curve-hover').setAttribute('visibility', 'hidden');
+  };
+  const showTooltip = event => {
+    const svg = root.querySelector('svg'), bounds = svg.getBoundingClientRect();
+    const plotX = (event.clientX - bounds.left) / bounds.width * width;
+    const plotY = (event.clientY - bounds.top) / bounds.height * height;
+    if (plotX < left || plotX > width - right || plotY < top || plotY > height - bottom) {
+      hideTooltip();
+      return;
+    }
+    // Snap to hourly points, including the latest observation at its exact time.
+    let slot = Math.max(0, Math.min(168, Math.round((plotX - left) / plotWidth * 168)));
+    if (Math.abs((plotX - left) / plotWidth * 168 - elapsedHours) < .5) slot = elapsedHours;
+    const expected = interpolate(expectedPoints, slot);
+    const actual = slot <= elapsedHours ? interpolate(actualPoints, slot) : null;
+    const tooltip = root.querySelector('.curve-tooltip');
+    tooltip.innerHTML = `<strong>${esc(dateFormatter.format(new Date(data.startMs + slot * 36e5)))}</strong>
+      <span>${tr('Curva esperada')}: <b>${percent.format(expected)}%</b></span>
+      ${actual === null ? '' : `<span>${tr(slot === elapsedHours ? 'Percentual oficial agora' : 'Uso estimado da semana')}: <b>${percent.format(actual)}%</b></span>
+      <span>${tr('Diferença')}: <b>${actual > expected ? '+' : ''}${percent.format(actual - expected)} pp</b></span>`}`;
+    tooltip.hidden = false;
+    const hover = root.querySelector('.curve-hover');
+    hover.setAttribute('visibility', 'visible');
+    const line = hover.querySelector('line');
+    line.setAttribute('x1', x(slot)); line.setAttribute('x2', x(slot));
+    const dots = hover.querySelectorAll('circle');
+    dots[0].setAttribute('cx', x(slot)); dots[0].setAttribute('cy', y(expected));
+    dots[1].setAttribute('visibility', actual === null ? 'hidden' : 'visible');
+    dots[1].setAttribute('cx', x(slot)); dots[1].setAttribute('cy', y(actual ?? 0));
+    const anchor = x(slot) / width * bounds.width;
+    tooltip.style.left = `${Math.max(0, Math.min(bounds.width - tooltip.offsetWidth, anchor + 12))}px`;
+    tooltip.style.top = `${Math.max(0, Math.min(bounds.height - tooltip.offsetHeight, event.clientY - bounds.top - tooltip.offsetHeight - 12))}px`;
+  };
+  let drag = null;
+  const pointerSlot = (event, clamp = false) => {
+    const bounds = root.querySelector('svg').getBoundingClientRect();
+    const px = (event.clientX - bounds.left) / bounds.width * width;
+    const py = (event.clientY - bounds.top) / bounds.height * height;
+    if (!clamp && (px < left || px > width - right || py < top || py > height - bottom)) return null;
+    return Math.max(0, Math.min(168, Math.round((px - left) / plotWidth * 168)));
+  };
+  const showSelection = (start, end) => {
+    const selection = root.querySelector('.curve-selection');
+    selection.setAttribute('x', x(start));
+    selection.setAttribute('width', Math.max(0, x(end) - x(start)));
+    selection.setAttribute('visibility', end > start ? 'visible' : 'hidden');
+  };
+  const restoreSelection = () => showSelection(hasSelection ? selectedStart : 0, hasSelection ? selectedEnd : 0);
+  const cancelDrag = () => {
+    const previous = drag;
+    drag = null;
+    if (previous && root.hasPointerCapture(previous.id)) root.releasePointerCapture(previous.id);
+    restoreSelection();
+    hideTooltip();
+  };
+  root.onpointerdown = event => {
+    if (event.button !== 0 || event.isPrimary === false || drag) return;
+    const slot = pointerSlot(event);
+    if (slot === null) return;
+    drag = { id: event.pointerId, start: slot, clientX: event.clientX };
+    root.setPointerCapture(event.pointerId);
+    showTooltip(event);
+  };
+  root.onpointermove = event => {
+    if (drag && event.pointerId !== drag.id) return;
+    showTooltip(event);
+    if (drag) {
+      const slot = pointerSlot(event, true);
+      showSelection(Math.min(drag.start, slot), Math.max(drag.start, slot));
+    }
+  };
+  root.onpointerup = event => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const previous = drag, slot = pointerSlot(event, true);
+    drag = null;
+    if (root.hasPointerCapture(event.pointerId)) root.releasePointerCapture(event.pointerId);
+    if (Math.abs(event.clientX - previous.clientX) < 5 || slot === previous.start) {
+      restoreSelection();
+      return;
+    }
+    const start = data.startMs + Math.min(previous.start, slot) * 36e5;
+    const end = data.startMs + Math.max(previous.start, slot) * 36e5;
+    showSelection(Math.min(previous.start, slot), Math.max(previous.start, slot));
+    hideTooltip();
+    applyTimeRange(start, end);
+  };
+  root.onpointerleave = () => { if (!drag) hideTooltip(); };
+  root.onpointercancel = cancelDrag;
+  root.onlostpointercapture = () => { if (drag) cancelDrag(); };
 
   const delta = data.official - expectedNow;
   summary.innerHTML = `<strong>${data.official.toFixed(0)}%</strong> ${tr("usado")} · ${tr("ideal")} <strong>${expectedNow.toFixed(0)}%</strong> · <span class="${delta > 0 ? 'negative' : 'positive'}">${delta > 0 ? '+' : ''}${delta.toFixed(0)} pp</span>`;
@@ -271,6 +400,23 @@ function renderWeeklyCurve() {
 function renderTimeline() {
   const timeline = document.getElementById('timeline'); const legend = document.getElementById('legend');
   const rows = state.data.timeline;
+  const sessionsSelected = state.selectedSessions.size > 0;
+  const filtering = sessionsSelected || state.selectedProjects.size > 0;
+  const selectedRows = projectActivityRows().filter(row => sessionsSelected
+    ? state.selectedSessions.has(row.session_id)
+    : state.selectedProjects.has(row.project_id));
+  const selectedBuckets = new Map();
+  for (const row of selectedRows) {
+    if (!selectedBuckets.has(row.bucket_ms)) selectedBuckets.set(row.bucket_ms, {});
+    const values = selectedBuckets.get(row.bucket_ms);
+    for (const metric of TOKEN_COMPONENTS) values[metric.key] = (values[metric.key] || 0) + (row[metric.key] || 0);
+  }
+  const selectedTotal = selectedRows.reduce((sum, row) => sum + TOKEN_COMPONENTS.reduce((n, metric) => n + (row[metric.key] || 0), 0), 0);
+  const total = state.data.totals.total_tokens;
+  document.getElementById('sessionSelectionSummary').textContent = filtering
+    ? `${sessionsSelected ? `${state.selectedSessions.size} ${tr('sessões selecionadas')}` : `${state.selectedProjects.size} ${tr('projetos selecionados')}`} · ${formatTokens(selectedTotal)} / ${formatTokens(total)} ${tr('processados')} · ${new Intl.NumberFormat(locale(), {style: 'percent', maximumFractionDigits: 1}).format(total ? selectedTotal / total : 0)} ${tr('do total no intervalo')} · ${tr('Restante esmaecido')}`
+    : tr('Todas as sessões · selecione projetos ou sessões abaixo para comparar com o total.');
+  document.getElementById('clearSessionSelection').hidden = !filtering;
   const oldAxis = timeline.parentElement.querySelector('.axis'); if (oldAxis) oldAxis.remove();
   if (!rows.length) { timeline.innerHTML = `<div class="empty">${tr('Sem atividade neste intervalo.')}</div>`; legend.innerHTML = ''; return; }
   legend.innerHTML = TOKEN_COMPONENTS.map(metric => `<span><i style="background:${metric.color}"></i>${metric.label}</span>`).join('');
@@ -284,23 +430,57 @@ function renderTimeline() {
   const bucketTotal = values => TOKEN_COMPONENTS.reduce((sum, metric) => sum + values[metric.key], 0);
   const max = Math.max(...buckets.map(([, values]) => bucketTotal(values)), 1);
   timeline.innerHTML = buckets.map(([bucket, values]) => `<div class="column" title="${formatDate(bucket)} · ${formatTokens(bucketTotal(values))} ${tr("processados")}">
-    ${TOKEN_COMPONENTS.map(metric => `<i class="segment" style="height:${values[metric.key] / max * 100}%;background:${metric.color}" title="${metric.label}: ${exact.format(values[metric.key])}"></i>`).join('')}
+    ${TOKEN_COMPONENTS.map(metric => {
+      const selected = filtering ? Math.min(values[metric.key], selectedBuckets.get(bucket)?.[metric.key] || 0) : values[metric.key];
+      const segment = (value, muted) => `<i class="segment${muted ? ' segment-muted' : ''}" style="height:${value / max * 100}%;background:${metric.color}" title="${metric.label} · ${tr(muted ? 'Outras sessões' : filtering ? 'Seleção' : 'Todas as sessões')}: ${exact.format(value)} / ${exact.format(values[metric.key])}"></i>`;
+      return segment(selected, false) + (filtering ? segment(values[metric.key] - selected, true) : '');
+    }).join('')}
   </div>`).join('');
   timeline.insertAdjacentHTML('afterend', `<div class="axis"><span>${formatDate(buckets[0][0])}</span><span>${formatDate(buckets.at(-1)[0])}</span></div>`);
 }
 
+function projectActivityRows() {
+  const rows = state.data.session_timeline || [];
+  return state.selectedProjects.size ? rows.filter(row => state.selectedProjects.has(row.project_id)) : rows;
+}
+function visibleClaudeSessions(rows = state.data.sessions) {
+  if (!state.selectedProjects.size) return rows;
+  const scoped = new Map();
+  const keys = ['messages', 'input_tokens', 'output_tokens', 'cache_creation_tokens',
+    'cache_read_tokens', 'thinking_tokens', 'fresh_tokens', 'total_tokens'];
+  for (const row of projectActivityRows()) {
+    if (!scoped.has(row.session_id)) scoped.set(row.session_id, Object.fromEntries(keys.map(key => [key, 0])));
+    const totals = scoped.get(row.session_id);
+    for (const key of keys) totals[key] += row[key] || 0;
+  }
+  return rows.filter(row => scoped.has(row.session_id))
+    .map(row => ({...row, ...scoped.get(row.session_id)}))
+    .sort((a, b) => b.total_tokens - a.total_tokens);
+}
+function pruneHiddenSessionSelection() {
+  if (!state.selectedProjects.size) return;
+  const visible = new Set(visibleClaudeSessions().map(row => row.session_id));
+  for (const id of state.selectedSessions) if (!visible.has(id)) state.selectedSessions.delete(id);
+}
+
 function renderRanking(id, rows, type, codex = false) {
+  const sourceRows = rows;
+  if (id === 'sessionList') rows = visibleClaudeSessions(rows);
   const root = document.getElementById(id); const max = Math.max(...rows.map(x => x.total_tokens), 1);
-  root.innerHTML = rows.slice(0, type === 'model' ? 8 : 12).map((row, i) => {
+  const selectable = id === 'sessionList' || id === 'projects';
+  root.innerHTML = (type === 'model' ? rows.slice(0, 8) : rows).map((row, i) => {
     const name = type === 'model' ? shortModel(row.model) : row.project;
     const countLabel = codex ? tr('eventos de uso') : tr('respostas');
-    const detail = type === 'model' ? `${exact.format(row.messages)} ${countLabel}` : `${row.session_id.slice(0, 8)} · ${exact.format(row.messages)} ${countLabel}`;
+    const detail = type === 'model' ? `${exact.format(row.messages)} ${countLabel}` : type === 'project' ? `${exact.format(row.sessions)} ${tr('sessões')} · ${exact.format(row.messages)} ${countLabel}` : `${row.session_id.slice(0, 8)} · ${exact.format(row.messages)} ${countLabel}`;
     const values = [
       [tr('Base perfil'), row.fresh_tokens], ['Input', row.input_tokens], ['Output', row.output_tokens],
       [tr('Cache escrito'), row.cache_creation_tokens], [tr('Cache lido'), row.cache_read_tokens], ['Thinking', row.thinking_tokens],
     ].filter(([label]) => !codex || label !== tr('Cache escrito'));
-    return `<div class="rank-row">
-      <div class="rank-summary"><div class="rank-name"><strong>${i + 1}. ${esc(name)}</strong><small title="${esc(type === 'session' ? row.cwd : row.model)}">${esc(detail)}</small></div><div class="rank-value">${formatTokens(row.total_tokens)}<small>${tr('processados')}</small></div></div>
+    const selected = selectable && (type === 'project' ? state.selectedProjects.has(row.project_id) : state.selectedSessions.has(row.session_id));
+    const selectionLabel = tr('Destacar no gráfico') + ' · ' + name + ' · ' + (type === 'project' ? row.cwd : row.session_id?.slice(0, 8));
+    return `<div class="rank-row${selectable ? ' selectable-session' : ''}${selected ? ' selected-session' : ''}">
+      ${selectable ? `<label class="session-toggle" title="${esc(selectionLabel)}"><input type="checkbox" aria-label="${esc(selectionLabel)}" data-session-index="${sourceRows.findIndex(source => type === 'session' ? source.session_id === row.session_id : source.project_id === row.project_id)}" ${selected ? 'checked' : ''}><span> ${tr('Destacar no gráfico')} · ${esc(name)} · ${esc(type === 'project' ? row.cwd : row.session_id.slice(0, 8))}</span></label>` : ''}
+      <div class="rank-summary"><div class="rank-name"><strong title="${esc(type === 'model' ? row.model : row.cwd)}">${i + 1}. ${esc(name)}${type === 'session' ? `<span class="compact-session-id"> · ${esc(row.session_id.slice(0, 8))}</span>` : ''}</strong><small title="${esc(type === 'model' ? row.model : row.cwd)}">${esc(detail)}</small></div><div class="rank-value" title="${exact.format(row.total_tokens)} ${tr('processados')}">${formatTokens(row.total_tokens)}<small>${tr('processados')}</small></div></div>
       <div class="mini-bar"><i style="--value:${row.total_tokens / max * 100}%;background:${COLORS[i % COLORS.length]}"></i></div>
       <div class="metric-breakdown">${values.map(([label, value]) => `<span title="${label}: ${exact.format(value || 0)}"><small>${label}</small><strong>${formatTokens(value)}</strong></span>`).join('')}</div>
     </div>`;
@@ -308,7 +488,57 @@ function renderRanking(id, rows, type, codex = false) {
 }
 
 function shortModel(model) { return model.replace(/^claude-/, '').replace(/-\d{8}$/, ''); }
+function applyTimeRange(start, end) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) return;
+  document.getElementById('fromInput').value = localInputValue(start);
+  document.getElementById('toInput').value = localInputValue(end);
+  document.querySelectorAll('[data-range]').forEach(button => button.classList.remove('active'));
+  return load({ start, end });
+}
 function localInputValue(timestamp) { const d = new Date(timestamp - new Date(timestamp).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); }
+
+for (const id of ['compactToggle', 'codexCompactToggle']) document.getElementById(id).addEventListener('click', () => {
+  state.compactRankings = !state.compactRankings;
+  try { localStorage.setItem('compactRankings', String(state.compactRankings)); } catch {}
+  renderRankingMode();
+});
+renderRankingMode();
+
+for (const [listId, toggle] of [['sessionList', toggleSession], ['projects', toggleProject]]) {
+  document.getElementById(listId).addEventListener('click', event => {
+    const row = event.target.closest('.selectable-session');
+    if (!row || event.target.closest('label')) return;
+    const checkbox = row.querySelector('input');
+    toggle(Number(checkbox.dataset.sessionIndex));
+  });
+  document.getElementById(listId).addEventListener('change', event => {
+    if (event.target.matches('input[data-session-index]')) toggle(Number(event.target.dataset.sessionIndex));
+  });
+}
+function renderActivitySelection() {
+  pruneHiddenSessionSelection();
+  renderTimeline();
+  renderRanking('sessionList', state.data.sessions, 'session');
+  renderRanking('projects', state.data.projects || [], 'project');
+}
+function toggleSession(index) {
+  const id = state.data.sessions[index]?.session_id;
+  if (!id) return;
+  if (state.selectedSessions.has(id)) state.selectedSessions.delete(id);
+  else state.selectedSessions.add(id);
+  renderActivitySelection();
+}
+function toggleProject(index) {
+  const id = state.data.projects[index]?.project_id;
+  if (id === undefined) return;
+  if (state.selectedProjects.has(id)) state.selectedProjects.delete(id);
+  else state.selectedProjects.add(id);
+  renderActivitySelection();
+}
+document.getElementById('clearSessionSelection').addEventListener('click', () => {
+  state.selectedSessions.clear(); state.selectedProjects.clear();
+  renderActivitySelection();
+});
 
 document.getElementById('language').value = language;
 document.getElementById('language').addEventListener('change', event => {
@@ -351,7 +581,7 @@ document.getElementById('presets').addEventListener('click', event => {
 });
 document.getElementById('applyCustom').addEventListener('click', () => {
   const start = new Date(document.getElementById('fromInput').value).getTime(); const end = new Date(document.getElementById('toInput').value).getTime();
-  if (Number.isFinite(start) && Number.isFinite(end) && start < end) { document.querySelectorAll('[data-range]').forEach(x => x.classList.remove('active')); load({ start, end }); }
+  applyTimeRange(start, end);
 });
 document.getElementById('fromInput').value = localInputValue(Date.now() - DURATIONS['5h']);
 document.getElementById('toInput').value = localInputValue(Date.now());

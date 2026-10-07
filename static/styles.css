@@ -115,7 +115,7 @@ input, select { padding: 8px 10px; margin-left: 4px; }
 .curve-legend .expected-dot { background: var(--accent); }
 .curve-legend .actual-dot { background: var(--green); }
 .curve-legend .now-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink); }
-.weekly-curve { width: 100%; min-height: 280px; }
+.weekly-curve { position: relative; width: 100%; min-height: 280px; }
 .weekly-curve svg { display: block; width: 100%; height: 290px; overflow: visible; }
 .curve-grid-line { stroke: #ffffff0d; stroke-width: 1; }
 .curve-day-line { stroke: #ffffff08; stroke-width: 1; }
@@ -196,3 +196,41 @@ code { color: #c9b9a8; }
 @media (prefers-reduced-motion: reduce) { .icon-button[aria-busy="true"] svg { animation: none; } }
 @media (max-width: 1100px) { .topbar { flex-wrap: wrap; } .topbar-actions { align-items: flex-start; } .header-toolbar { justify-content: flex-start; } #syncStatus { text-align: left; } }
 @media (max-width: 560px) { .topbar-actions { margin-top: 16px; } .header-toolbar { gap: 8px; } .header-toolbar .status { flex-basis: 100%; margin-bottom: 4px; } }
+
+.session-controls { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.session-controls p, .session-help { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.session-controls button[hidden] { display: none; }
+.segment-muted { opacity: .18; }
+.selectable-session { cursor: pointer; padding: 14px 10px; border-radius: 8px; }
+.selectable-session:hover { background: #ffffff05; }
+.selected-session { background: #d9775712; box-shadow: inset 3px 0 var(--accent); }
+.session-toggle { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); cursor: pointer; margin-bottom: 10px; overflow-wrap: anywhere; }
+.session-toggle input { accent-color: var(--accent); }
+.session-toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+#sessionList { max-height: 850px; overflow-y: auto; }
+
+.ranking-stack { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.ranking-toolbar { display: flex; justify-content: flex-end; margin-top: 14px; }
+.ranking-toolbar button[aria-pressed="true"] { border-color: var(--accent); }
+.compact-session-id { display: none; }
+.compact-rankings .rank-row { display: flex; align-items: center; gap: 10px; padding: 12px 8px; }
+.compact-rankings .rank-summary { display: contents; }
+.compact-rankings .rank-name { flex: 1 1 0; order: 1; }
+.compact-rankings .mini-bar { flex: 0 0 23%; margin: 0; order: 2; }
+.compact-rankings .rank-value { flex: 0 0 54px; order: 3; }
+.compact-rankings .metric-breakdown, .compact-rankings .rank-name small,
+.compact-rankings .rank-value small, .compact-rankings .session-toggle span { display: none; }
+.compact-rankings .compact-session-id { display: inline; color: var(--muted); font-weight: normal; }
+.compact-rankings .session-toggle { margin: 0; flex: 0 0 auto; order: 0; }
+.compact-rankings .session-toggle input { margin: 0; }
+
+.curve-hover { pointer-events: none; }
+.curve-hover-line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
+.curve-tooltip { position: absolute; z-index: 2; pointer-events: none; max-width: 100%; padding: 10px 12px; border: 1px solid var(--muted); border-radius: 8px; background: var(--panel); color: var(--ink); box-shadow: 0 6px 24px #0005; font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.curve-tooltip strong, .curve-tooltip span { display: block; }
+.curve-tooltip strong { margin-bottom: 4px; }
+.curve-tooltip span { color: var(--muted); }
+.curve-tooltip b { color: var(--ink); }
+
+#weeklyCurve { cursor: crosshair; touch-action: pan-y; user-select: none; }
+.curve-selection { fill: #d9775726; stroke: var(--accent); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
