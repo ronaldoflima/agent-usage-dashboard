@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local Claude usage dashboard.
+"""Local coding agent usage dashboard (Claude and Codex).
 
 Only metadata and token counters are read from Claude Code JSONL logs. Prompt and
 response content never enters the database or HTTP responses.
