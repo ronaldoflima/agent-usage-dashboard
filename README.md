@@ -234,7 +234,7 @@ daylight-saving transition.
 ## Terminal pace indicator
 
 `scripts/pacebar` displays Claude's weekly usage relative to the expected pace
-in one line, for example `ritmo 1.12x ▲ (ideal 40%)`. It requires only Python's
+in one line, for example `pace 1.12x ▲ (expected 40%)`. It requires only Python's
 standard library, like the dashboard.
 
 For a ccstatusline custom-command widget, set `commandPath` to the absolute

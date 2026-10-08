@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# pacebar: ritmo do limite semanal do Claude (uso real ÷ uso esperado até agora), numa linha (widget custom-command do ccstatusline).
+# pacebar: Claude weekly limit pace (actual usage ÷ expected usage so far) on one line (ccstatusline custom-command widget).
 #
-# Lê o JSON da statusline no stdin (rate_limits.seven_day). A curva esperada vem do perfil
-# histórico do agent-usage-dashboard (CLAUDE_USAGE_URL, default http://127.0.0.1:8787);
-# sem dashboard, usa a curva linear e marca o valor com "~". Mesmos limiares do dashboard:
-# > 1.08x acelerado (▲), < 0.82x tranquilo (▽), entre os dois no ritmo (=).
+# Reads the statusline JSON from stdin (rate_limits.seven_day). The expected curve comes from the
+# agent-usage-dashboard historical profile (CLAUDE_USAGE_URL, default http://127.0.0.1:8787);
+# without the dashboard it uses a linear curve and prefixes the value with "~". Same thresholds as the dashboard:
+# > 1.08x fast (▲), < 0.82x slow (▽), in between on pace (=).
 import json
 import os
 import sys
@@ -109,7 +109,7 @@ def main():
         arrow = "▽"
     else:
         arrow = "="
-    print(f"ritmo {mark}{ratio:.2f}x {arrow} (ideal {expected:.0f}%)")
+    print(f"pace {mark}{ratio:.2f}x {arrow} (expected {expected:.0f}%)")
 
 
 if __name__ == "__main__":
