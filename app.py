@@ -94,12 +94,35 @@ PROFILE_MAX_AGE_HOURS = 24
 PROFILE_LOCK = threading.Lock()
 
 
-def read_language() -> str:
+def read_settings() -> dict[str, Any]:
     try:
-        language = json.loads(SETTINGS_PATH.read_text(encoding="utf-8")).get("language")
-    except (OSError, ValueError, AttributeError):
-        return "en"
+        settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return settings if isinstance(settings, dict) else {}
+
+
+def read_language() -> str:
+    language = read_settings().get("language")
     return language if language in LANGUAGES else "en"
+
+
+def load_remote_hosts(cli: Sequence[dict[str, str]] = ()) -> tuple[list[dict[str, str]], list[str]]:
+    configured = read_settings().get("remote_hosts", [])
+    if not isinstance(configured, list):
+        return list(cli), ["remote_hosts must be a list"]
+    hosts: dict[str, dict[str, str]] = {}
+    errors = []
+    for entry in configured:
+        try:
+            host = validate_host(entry)
+        except ValueError as error:
+            errors.append(str(error))
+            continue
+        hosts[host["name"]] = host
+    for host in cli:
+        hosts[host["name"]] = host
+    return list(hosts.values()), errors
 
 
 def refresh_profile(index: "UsageIndex", limits: dict[str, Any], default_timezone: str,
@@ -479,6 +502,7 @@ class QuotaClient:
 class DashboardHandler(BaseHTTPRequestHandler):
     index: UsageIndex
     quota: QuotaClient
+    cli_remotes: list[dict[str, str]] = []
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
@@ -498,8 +522,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except (ValueError, AttributeError) as error:
             self._json({"ok": False, "error": str(error)}, status=400)
             return
+        settings = read_settings()
+        settings["language"] = language
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_PATH.write_text(json.dumps({"language": language}), encoding="utf-8")
+        SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
         self._json({"ok": True, "language": language})
 
     def _update(self) -> None:
@@ -546,7 +572,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._profile()
             return
         if parsed.path == "/api/health":
-            self._json({"ok": True, "version": VERSION})
+            self._json({"ok": True, "version": VERSION, "remotes": {
+                "claude": list(self.index.remote_status.values()),
+                "codex": list(self.codex_index.remote_status.values())}})
             return
         self._static(parsed.path)
 
@@ -577,7 +605,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": str(error)}, status=400)
             return
         index = self.codex_index if codex else self.index
-        scan = index.refresh() if query.get("sync") == ["1"] else None
+        scan = None
+        if query.get("sync") == ["1"]:
+            hosts, errors = load_remote_hosts(self.cli_remotes)
+            scan = index.refresh(hosts)
+            scan["remotes"] += [{"host": "settings", "ok": False, "error": error} for error in errors]
         result = index.dashboard(start_ms, end_ms, bucket_ms)
         if codex:
             # Building from the already-indexed counters requires no network access.
@@ -647,6 +679,8 @@ def main() -> None:
     parser.add_argument("--db", type=Path, default=ROOT / ".cache" / "usage.sqlite3")
     parser.add_argument("--codex-dir", type=Path, default=DEFAULT_CODEX_DIR)
     parser.add_argument("--codex-bin", default="codex", help="Codex CLI executable for official limit reads")
+    parser.add_argument("--remote", action="append", default=[], type=parse_remote_arg, metavar="NAME=SSH_TARGET",
+                        help="pull usage logs from a remote host over SSH (repeatable; also .cache/settings.json remote_hosts)")
     parser.add_argument("--codex-db", type=Path, default=ROOT / ".cache" / "codex-usage.sqlite3")
     parser.add_argument("--snapshots-db", type=Path, default=ROOT / ".cache" / "quota-snapshots.sqlite3")
     parser.add_argument("--timezone", default="UTC", help="IANA timezone for the Codex historical profile")
@@ -660,6 +694,7 @@ def main() -> None:
     DashboardHandler.quota = QuotaClient(args.claude_dir.expanduser())
     DashboardHandler.codex_index = CodexIndex(args.codex_dir.expanduser(), args.codex_db)
     DashboardHandler.codex_quota = CodexQuotaClient(args.codex_dir.expanduser(), args.codex_bin)
+    DashboardHandler.cli_remotes = args.remote
     DashboardHandler.snapshots = SnapshotStore(args.snapshots_db)
     DashboardHandler.profile_timezone = args.timezone
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
