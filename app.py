@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import threading
 import time
 import urllib.error
@@ -26,6 +27,16 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 DEFAULT_CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
+
+def _local_version() -> str | None:
+    try:
+        out = subprocess.run(["git", "describe", "--tags", "--abbrev=0"], cwd=ROOT, capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+VERSION = _local_version()
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_BETA = "oauth-2025-04-20"
 PROFILE_PATH = ROOT / ".cache" / "usage-profile.json"
@@ -474,7 +485,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._profile()
             return
         if parsed.path == "/api/health":
-            self._json({"ok": True})
+            self._json({"ok": True, "version": VERSION})
             return
         self._static(parsed.path)
 
