@@ -21,11 +21,11 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Sequence
 from urllib.parse import parse_qs, urlparse
 
-from remote_source import (RemoteError, claude_event, fetch_remote, parse_remote_arg, parse_timestamp,
-                           safe_int, scan, validate_host)
+from remote_source import (RemoteError, fetch_remote, parse_remote_arg, parse_timestamp, safe_int, scan,
+                           validate_host)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -165,13 +165,15 @@ def project_root(cwd: str) -> str:
 class UsageIndex:
     """Incremental, content-free index over ~/.claude/projects JSONL files."""
 
+    provider = "claude"
+
     def __init__(self, claude_dir: Path, db_path: Path):
         self.claude_dir = claude_dir
-        self.projects_dir = claude_dir / "projects"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(db_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.lock = threading.Lock()
+        self.remote_status: dict[str, dict[str, Any]] = {}
         self._create_schema()
 
     def _create_schema(self) -> None:
@@ -196,7 +198,8 @@ class UsageIndex:
                 output_tokens INTEGER NOT NULL,
                 cache_read_tokens INTEGER NOT NULL,
                 cache_creation_tokens INTEGER NOT NULL,
-                thinking_tokens INTEGER NOT NULL
+                thinking_tokens INTEGER NOT NULL,
+                host TEXT NOT NULL DEFAULT 'local'
             );
             CREATE INDEX IF NOT EXISTS idx_usage_time ON usage_events(timestamp_ms);
             CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_events(session_id, timestamp_ms);
@@ -204,68 +207,59 @@ class UsageIndex:
             CREATE INDEX IF NOT EXISTS idx_usage_source ON usage_events(source_path);
             """
         )
+        columns = {row[1] for row in self.connection.execute("PRAGMA table_info(usage_events)")}
+        if "host" not in columns:
+            self.connection.execute("ALTER TABLE usage_events ADD COLUMN host TEXT NOT NULL DEFAULT 'local'")
         self.connection.commit()
 
-    def refresh(self) -> dict[str, int]:
+    def refresh(self, remotes: Sequence[dict[str, str]] = (), command: list[str] | None = None) -> dict[str, Any]:
         started = time.monotonic()
-        files_seen = lines_seen = events_written = 0
-        if not self.projects_dir.exists():
-            return {"files": 0, "lines": 0, "events": 0, "elapsed_ms": 0}
+        with self.lock, self.connection:
+            totals = self._ingest(scan(self.provider, self.claude_dir, self._cursors("")), "", "local")
+        statuses = [self._refresh_remote(host, command) for host in remotes]
+        return {**totals, "remotes": statuses, "elapsed_ms": round((time.monotonic() - started) * 1000)}
 
+    def _cursors(self, prefix: str) -> dict[str, list[int]]:
+        rows = self.connection.execute("SELECT path, offset, size, mtime_ns FROM source_files")
+        return {path[len(prefix):]: [offset, size, mtime] for path, offset, size, mtime in rows
+                if path.startswith(prefix)}
+
+    def _ingest(self, records: Iterable[dict[str, Any]], prefix: str, host: str) -> dict[str, int]:
+        files = lines = events = 0
+        for record in records:
+            self._apply(record, prefix, host)
+            files += 1
+            lines += record["lines"]
+            events += len(record["events"])
+        return {"files": files, "lines": lines, "events": events}
+
+    def _apply(self, record: dict[str, Any], prefix: str, host: str) -> None:
+        path = prefix + record["path"]
+        if record["reset"]:
+            self.connection.execute("DELETE FROM usage_events WHERE source_path = ?", (path,))
+        for event in record["events"]:
+            self._upsert_event({**event, "source_path": path, "host": host})
+        self.connection.execute(
+            """INSERT INTO source_files(path, offset, size, mtime_ns) VALUES (?, ?, ?, ?)
+               ON CONFLICT(path) DO UPDATE SET
+                 offset=excluded.offset, size=excluded.size, mtime_ns=excluded.mtime_ns""",
+            (path, record["offset"], record["size"], record["mtime_ns"]),
+        )
+
+    def _refresh_remote(self, host: dict[str, str], command: list[str] | None) -> dict[str, Any]:
+        name = host["name"]
         with self.lock:
-            for path in self.projects_dir.rglob("*.jsonl"):
-                try:
-                    stat = path.stat()
-                except OSError:
-                    continue
-                relative = str(path.relative_to(self.claude_dir))
-                previous = self.connection.execute(
-                    "SELECT offset, size, mtime_ns FROM source_files WHERE path = ?", (relative,)
-                ).fetchone()
-                if previous and previous[1] == stat.st_size and previous[2] == stat.st_mtime_ns:
-                    continue
-
-                files_seen += 1
-                offset = int(previous[0]) if previous and stat.st_size >= previous[0] else 0
-                if previous and offset == 0:
-                    self.connection.execute("DELETE FROM usage_events WHERE source_path = ?", (relative,))
-
-                committed_offset = offset
-                try:
-                    with path.open("rb") as handle:
-                        handle.seek(offset)
-                        while True:
-                            line_start = handle.tell()
-                            raw = handle.readline()
-                            if not raw:
-                                break
-                            if not raw.endswith(b"\n"):
-                                committed_offset = line_start
-                                break
-                            committed_offset = handle.tell()
-                            lines_seen += 1
-                            event = claude_event(raw, relative)
-                            if event is not None:
-                                self._upsert_event(event)
-                                events_written += 1
-                except OSError:
-                    continue
-
-                self.connection.execute(
-                    """INSERT INTO source_files(path, offset, size, mtime_ns)
-                       VALUES (?, ?, ?, ?)
-                       ON CONFLICT(path) DO UPDATE SET
-                         offset=excluded.offset, size=excluded.size, mtime_ns=excluded.mtime_ns""",
-                    (relative, committed_offset, stat.st_size, stat.st_mtime_ns),
-                )
-            self.connection.commit()
-
-        return {
-            "files": files_seen,
-            "lines": lines_seen,
-            "events": events_written,
-            "elapsed_ms": round((time.monotonic() - started) * 1000),
-        }
+            cursors = self._cursors(f"{name}:")
+        try:
+            records = fetch_remote(host, self.provider, cursors, command)
+        except RemoteError as error:
+            status: dict[str, Any] = {"host": name, "ok": False, "error": str(error)}
+        else:
+            with self.lock, self.connection:
+                status = {"host": name, "ok": True, **self._ingest(records, f"{name}:", name)}
+        status["synced_at"] = datetime.now(timezone.utc).isoformat()
+        self.remote_status[name] = status
+        return status
 
     def _upsert_event(self, event: dict[str, Any]) -> None:
         columns = tuple(event.keys())

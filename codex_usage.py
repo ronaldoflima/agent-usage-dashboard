@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from app import QuotaClient, UsageIndex
-from remote_source import codex_records, normalize_limits, parse_timestamp
+from remote_source import normalize_limits, parse_timestamp
 
 DEFAULT_CODEX_DIR = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 
@@ -84,6 +84,8 @@ class CodexIndex(UsageIndex):
     Unchanged files are skipped. Forked history before session creation is ignored;
     cumulative counters establish a baseline but never count as new activity.
     """
+    provider = "codex"
+
     def __init__(self, codex_dir: Path, db_path: Path):
         super().__init__(codex_dir, db_path)
         self.codex_dir = codex_dir
@@ -91,35 +93,13 @@ class CodexIndex(UsageIndex):
             source_path TEXT PRIMARY KEY, observed_at TEXT NOT NULL, payload TEXT NOT NULL)""")
         self.connection.commit()
 
-    def refresh(self):
-        started = time.monotonic()
-        files = events = 0
-        with self.lock, self.connection:
-            for folder in ("sessions", "archived_sessions"):
-                for path in (self.codex_dir / folder).rglob("*.jsonl"):
-                    try:
-                        stat = path.stat()
-                        relative = str(path.relative_to(self.codex_dir))
-                        previous = self.connection.execute(
-                            "SELECT size, mtime_ns FROM source_files WHERE path=?", (relative,)).fetchone()
-                        if previous and tuple(previous) == (stat.st_size, stat.st_mtime_ns):
-                            continue
-                        with path.open("rb") as handle:
-                            records, observation = codex_records(handle, relative)
-                        self.connection.execute("DELETE FROM usage_events WHERE source_path=?", (relative,))
-                        for record in records:
-                            self._upsert_event(record)
-                        self.connection.execute("DELETE FROM limit_observations WHERE source_path=?", (relative,))
-                        if observation:
-                            self.connection.execute("INSERT INTO limit_observations VALUES (?, ?, ?)",
-                                (relative, observation["fetched_at"], json.dumps(observation)))
-                        self.connection.execute("INSERT OR REPLACE INTO source_files VALUES (?, ?, ?, ?)",
-                                                (relative, stat.st_size, stat.st_size, stat.st_mtime_ns))
-                        files += 1
-                        events += len(records)
-                    except OSError:
-                        continue
-        return {"files": files, "events": events, "elapsed_ms": round((time.monotonic() - started) * 1000)}
+    def _apply(self, record, prefix, host):
+        super()._apply(record, prefix, host)
+        path = prefix + record["path"]
+        self.connection.execute("DELETE FROM limit_observations WHERE source_path=?", (path,))
+        if record["observation"]:
+            self.connection.execute("INSERT INTO limit_observations VALUES (?, ?, ?)",
+                (path, record["observation"]["fetched_at"], json.dumps(record["observation"])))
 
     def local_limits(self):
         with self.lock:

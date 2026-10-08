@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app import UsageIndex
+from codex_usage import CodexIndex
 from remote_source import RemoteError, fetch_remote, parse_remote_arg, scan, validate_host
 
 
@@ -107,3 +109,72 @@ class ValidateHostTest(unittest.TestCase):
                 validate_host(entry)
         with self.assertRaises(ValueError):
             parse_remote_arg("no-equals")
+
+
+class RemoteIndexTest(unittest.TestCase):
+    LOCAL_PYTHON = [sys.executable, "-"]
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.local, self.remote = base / "local", base / "remote"
+        for root in (self.local, self.remote):
+            (root / "projects" / "p").mkdir(parents=True)
+        self.index = UsageIndex(self.local, base / "index.sqlite3")
+        self.host = {"name": "box", "ssh_target": "user@example-host", "claude_dir": str(self.remote)}
+
+    def tearDown(self):
+        self.index.connection.close()
+        self.temp.cleanup()
+
+    def totals(self):
+        return self.index.dashboard(0, 2_000_000_000_000, 60_000)["totals"]
+
+    def test_aggregates_remote_and_dedups_shared_sessions(self):
+        (self.local / "projects" / "p" / "a.jsonl").write_text(claude_line("m1", session="s-local"))
+        (self.remote / "projects" / "p" / "b.jsonl").write_text(
+            claude_line("m2", session="s-remote") + claude_line("m1", session="s-local"))
+        result = self.index.refresh([self.host], command=self.LOCAL_PYTHON)
+        self.assertEqual(result["remotes"][0]["host"], "box")
+        self.assertTrue(result["remotes"][0]["ok"])
+        self.assertEqual(self.totals()["messages"], 2)
+        hosts = dict(self.index.connection.execute("SELECT event_key, host FROM usage_events"))
+        self.assertEqual(hosts["s-remote:m2"], "box")
+        paths = {row[0] for row in self.index.connection.execute("SELECT path FROM source_files")}
+        self.assertEqual(paths, {"projects/p/a.jsonl", "box:projects/p/b.jsonl"})
+        self.assertEqual(self.index.refresh([self.host], command=self.LOCAL_PYTHON)["remotes"][0]["files"], 0)
+
+    def test_remote_failure_keeps_local_data_and_cursors(self):
+        (self.local / "projects" / "p" / "a.jsonl").write_text(claude_line("m1"))
+        failing = [sys.executable, "-c", "import sys; sys.exit('ssh: connect refused')"]
+        result = self.index.refresh([self.host], command=failing)
+        self.assertFalse(result["remotes"][0]["ok"])
+        self.assertEqual(result["remotes"][0]["error"], "ssh: connect refused")
+        self.assertEqual(self.totals()["messages"], 1)
+        self.assertEqual(self.index.remote_status["box"]["ok"], False)
+
+    def test_migrates_existing_database_without_host_column(self):
+        path = Path(self.temp.name) / "old.sqlite3"
+        import sqlite3
+        connection = sqlite3.connect(path)
+        connection.execute("""CREATE TABLE usage_events (event_key TEXT PRIMARY KEY, source_path TEXT NOT NULL,
+            timestamp_ms INTEGER NOT NULL, session_id TEXT NOT NULL, model TEXT NOT NULL, cwd TEXT NOT NULL,
+            project TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+            cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL,
+            thinking_tokens INTEGER NOT NULL)""")
+        connection.execute("INSERT INTO usage_events VALUES ('k','p',1,'s','m','','x',1,1,0,0,0)")
+        connection.commit()
+        connection.close()
+        migrated = UsageIndex(self.local, path)
+        self.assertEqual(migrated.connection.execute("SELECT host FROM usage_events").fetchone()[0], "local")
+        migrated.connection.close()
+
+    def test_codex_remote_observation_is_stored(self):
+        (self.remote / "sessions").mkdir()
+        (self.remote / "sessions" / "r.jsonl").write_text(codex_lines())
+        codex = CodexIndex(self.local, Path(self.temp.name) / "codex.sqlite3")
+        host = {"name": "box", "ssh_target": "user@example-host", "codex_dir": str(self.remote)}
+        result = codex.refresh([host], command=self.LOCAL_PYTHON)
+        self.assertTrue(result["remotes"][0]["ok"])
+        self.assertEqual(codex.dashboard(0, 2_000_000_000_000, 60_000)["totals"]["messages"], 1)
+        codex.connection.close()
