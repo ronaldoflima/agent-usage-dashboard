@@ -144,6 +144,13 @@ def build_profile(
     }
 
 
+def save_profile(profile: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate a historical Claude usage profile")
     parser.add_argument("--claude-dir", type=Path, default=DEFAULT_CLAUDE_DIR)
@@ -186,10 +193,7 @@ def main() -> None:
         half_life_days=args.half_life_days,
         metric=args.metric,
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = args.output.with_suffix(args.output.suffix + ".tmp")
-    temporary.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(args.output)
+    save_profile(profile, args.output)
 
     weekly = profile["weekly"]
     print(f"Perfil salvo em {args.output}")

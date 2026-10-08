@@ -88,6 +88,8 @@ KEYCHAIN_SERVICE = "Claude Code-credentials"
 PROFILE_PATH = ROOT / ".cache" / "usage-profile.json"
 SETTINGS_PATH = ROOT / ".cache" / "settings.json"
 LANGUAGES = ("en", "pt-BR", "es")
+PROFILE_MAX_AGE_HOURS = 24
+PROFILE_LOCK = threading.Lock()
 
 
 def read_language() -> str:
@@ -96,6 +98,39 @@ def read_language() -> str:
     except (OSError, ValueError, AttributeError):
         return "en"
     return language if language in LANGUAGES else "en"
+
+
+def refresh_profile(index: "UsageIndex", limits: dict[str, Any], default_timezone: str,
+                    path: Path = PROFILE_PATH) -> bool:
+    """Rebuild the Claude profile from already-indexed counters when missing or older than a day."""
+    from build_usage_profile import account_reset, build_profile, save_profile
+    if not PROFILE_LOCK.acquire(blocking=False):
+        return False
+    try:
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+            generated = datetime.fromisoformat(current["generated_at"].replace("Z", "+00:00"))
+        except (OSError, KeyError, ValueError, TypeError, AttributeError):
+            current = {}
+        else:
+            fresh = (datetime.now(timezone.utc) - generated).total_seconds() < PROFILE_MAX_AGE_HOURS * 3600
+            if fresh and (current.get("weekly") or {}).get("raw_total", 1) > 0:
+                return False
+        timezone_name = (current.get("weekly") or {}).get("timezone") or default_timezone
+        try:
+            reset = account_reset(limits, timezone_name)
+        except ValueError:
+            return False
+        with index.lock:
+            profile = build_profile(
+                index, lookback_days=current.get("lookback_days", 90), timezone_name=timezone_name,
+                reset_weekday=reset.weekday(), reset_hour=reset.hour, reset_minute=reset.minute,
+                half_life_days=current.get("half_life_days", 28), metric=current.get("metric", "fresh_tokens"),
+            )
+        save_profile(profile, path)
+        return True
+    finally:
+        PROFILE_LOCK.release()
 
 
 def parse_timestamp(value: Any) -> int | None:
@@ -572,6 +607,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._static(parsed.path)
 
     def _profile(self) -> None:
+        refresh_profile(self.index, self.quota.get(cache_only=True), self.profile_timezone)
         try:
             profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
             generated = datetime.fromisoformat(profile["generated_at"].replace("Z", "+00:00"))

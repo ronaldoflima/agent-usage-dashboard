@@ -237,7 +237,15 @@ network without adding authentication.
 
 ## Historical pace profile
 
-Generate or refresh the personal usage curve with:
+The dashboard builds the personal usage curve on its own: when
+`.cache/usage-profile.json` is missing, empty, or older than 24 hours, the next
+profile read after a sync rebuilds it from the already-indexed counters and the
+cached weekly reset, without extra network calls or log scans. A fresh install
+therefore gets its profile after the first **Sync now**. Rebuilds keep the
+existing file's timezone, lookback, half-life and metric; a new profile uses
+the server's `--timezone` and the defaults below.
+
+To generate it manually (for example with other parameters):
 
 ```bash
 python3 build_usage_profile.py --timezone America/Sao_Paulo

@@ -4,6 +4,7 @@ import unittest
 import urllib.error
 from unittest.mock import patch
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import threading
 import urllib.request
@@ -173,6 +174,54 @@ class UsageIndexTest(unittest.TestCase):
         ]})
         self.assertEqual(normalized["limits"][0]["label"], "Sessão")
         self.assertEqual(normalized["limits"][1]["label"], "Semanal · Opus")
+
+
+class ProfileRefreshTest(unittest.TestCase):
+    LIMITS = {'ok': True, 'limits': [{'kind': 'weekly_all', 'resets_at': '2026-09-23T17:30:00Z'}]}
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.path = self.root / 'usage-profile.json'
+        self.index = UsageIndex(self.root, self.root / 'index.sqlite3')
+
+    def tearDown(self):
+        self.index.connection.close()
+        self.temp.cleanup()
+
+    def write_profile(self, hours_old, **extra):
+        generated = datetime.now(timezone.utc) - timedelta(hours=hours_old)
+        profile = {'generated_at': generated.isoformat(), 'lookback_days': 60, 'half_life_days': 14,
+                   'metric': 'output_tokens', 'weekly': {'timezone': 'Europe/London'}, **extra}
+        self.path.write_text(json.dumps(profile))
+
+    def test_builds_missing_profile_from_cached_limits(self):
+        self.assertTrue(app.refresh_profile(self.index, self.LIMITS, 'America/Sao_Paulo', self.path))
+        profile = json.loads(self.path.read_text())
+        self.assertEqual(profile['weekly']['timezone'], 'America/Sao_Paulo')
+        self.assertEqual((profile['weekly']['reset_weekday'], profile['weekly']['reset_hour']), (2, 14))
+
+    def test_keeps_recent_profile(self):
+        self.write_profile(hours_old=2)
+        before = self.path.read_text()
+        self.assertFalse(app.refresh_profile(self.index, self.LIMITS, 'UTC', self.path))
+        self.assertEqual(self.path.read_text(), before)
+
+    def test_rebuilds_old_profile_with_its_own_settings(self):
+        self.write_profile(hours_old=30)
+        self.assertTrue(app.refresh_profile(self.index, self.LIMITS, 'UTC', self.path))
+        profile = json.loads(self.path.read_text())
+        self.assertEqual((profile['lookback_days'], profile['half_life_days'], profile['metric']), (60, 14, 'output_tokens'))
+        self.assertEqual(profile['weekly']['timezone'], 'Europe/London')
+
+    def test_rebuilds_recent_but_empty_profile(self):
+        self.write_profile(hours_old=1, weekly={'timezone': 'UTC', 'raw_total': 0})
+        self.assertTrue(app.refresh_profile(self.index, self.LIMITS, 'UTC', self.path))
+
+    def test_without_limits_does_nothing(self):
+        for limits in ({'ok': False}, {'ok': True, 'limits': []}):
+            self.assertFalse(app.refresh_profile(self.index, limits, 'UTC', self.path))
+        self.assertFalse(self.path.exists())
 
 
 class LanguageSettingTest(unittest.TestCase):

@@ -114,10 +114,11 @@ async function load(custom, sync = false, force = false) {
     const jobs = [];
     jobs.push((async () => {
       const claudeSync = sync && providerEnabled('claude'), claudeForce = force && providerEnabled('claude');
-      const [usageResponse, limitsResponse, profileResponse] = await Promise.all([
+      const [usageResponse, limitsResponse] = await Promise.all([
         fetch(`/api/dashboard?from=${start}&to=${end}${claudeSync ? '&sync=1' : ''}`),
-        fetch(`/api/limits${claudeForce ? '?force=1' : claudeSync ? '?sync=1' : ''}`), fetch('/api/profile')
+        fetch(`/api/limits${claudeForce ? '?force=1' : claudeSync ? '?sync=1' : ''}`)
       ]);
+      const profileResponse = await fetch('/api/profile');
       state.data = await usageResponse.json(); state.limits = await limitsResponse.json(); state.profile = await profileResponse.json();
       if (!state.data.ok) throw new Error(state.data.error);
       state.weeklyData = await loadWeeklyData();
