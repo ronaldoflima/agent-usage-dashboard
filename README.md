@@ -230,27 +230,78 @@ network without adding authentication.
 
 ### Remote hosts
 
-To include token history from other machines where you run Claude Code or Codex, list them
-in `.cache/settings.json` (git-ignored) or pass `--remote NAME=SSH_TARGET` (repeatable; the
-flag wins on a name clash):
+Include token history from other machines where you run Claude Code or Codex
+(a server, a second laptop). The dashboard pulls it over SSH on **Sync now** and
+auto-sync; nothing is installed on the remote host and only counters and
+metadata come back. Official quota still comes from the local account.
 
-```json
-{
-  "remote_hosts": [
-    {"name": "server", "ssh_target": "user@example-host"},
-    {"name": "box", "ssh_target": "example-alias", "claude_dir": "~/.claude", "codex_dir": "~/.codex"}
-  ]
-}
-```
+**Requirements on the remote host:** `python3` (3.7+) and the usual log folders
+(`~/.claude/projects`, `~/.codex/sessions`).
 
-On **Sync now** (and auto-sync) the dashboard runs
-`ssh -o BatchMode=yes -- SSH_TARGET python3 -` per host and pipes `remote_source.py` to it.
-The script reads the remote logs and prints only counters and metadata; conversation content
-never leaves the remote host. Requirements: key-based SSH access (any target `ssh` accepts,
-including `~/.ssh/config` aliases) and `python3` on the remote host. Remote events are merged
-into the same totals and pace profile; official quota still comes from the local account. A
-failing host is reported in the sync status and does not affect local data. Settings changes
-are picked up on the next sync, without a restart.
+1. Make sure SSH works without a password prompt. The dashboard runs `ssh` with
+   `BatchMode=yes`, so it needs key-based auth (or an agent with the key loaded):
+
+   ```bash
+   ssh -o BatchMode=yes user@example-host python3 --version
+   ```
+
+   Optionally give the host an alias in `~/.ssh/config`; `ControlMaster` reuses
+   one connection for the Claude and Codex pulls of the same sync:
+
+   ```
+   Host example-alias
+     HostName example-host
+     User user
+     IdentityFile ~/.ssh/id_ed25519
+     ControlMaster auto
+     ControlPath ~/.ssh/cm-%r@%h:%p
+     ControlPersist 5m
+   ```
+
+2. List the hosts in `.cache/settings.json` (git-ignored; keep any existing keys
+   such as `language`):
+
+   ```json
+   {
+     "remote_hosts": [
+       {"name": "server", "ssh_target": "user@example-host"},
+       {"name": "box", "ssh_target": "example-alias", "claude_dir": "~/.claude", "codex_dir": "~/.codex"}
+     ]
+   }
+   ```
+
+   | Field | Required | Meaning |
+   | --- | --- | --- |
+   | `name` | yes | Label shown in the sync status; letters, digits, `-`, `_`; not `local` |
+   | `ssh_target` | yes | Anything `ssh` accepts: `user@host`, a `~/.ssh/config` alias |
+   | `claude_dir` | no | Claude config dir on the remote host (default `~/.claude`) |
+   | `codex_dir` | no | Codex home on the remote host (default `~/.codex`) |
+
+   Alternatively pass `--remote NAME=SSH_TARGET` (repeatable; the flag wins on a
+   name clash):
+
+   ```bash
+   python3 app.py --remote server=user@example-host
+   ```
+
+3. Click **Sync now**. Settings changes are picked up on the next sync, without a
+   restart. The first pull of a host reads its whole history and can take a
+   while; later syncs only read what changed. The sync status line shows each
+   host's last pull or its error, and `/api/health` lists the latest status per
+   host and provider.
+
+How it works: per host and provider, the dashboard runs
+`ssh -o BatchMode=yes -o ConnectTimeout=10 -- SSH_TARGET python3 -` and pipes
+`remote_source.py` to it. The script reads the remote logs and prints only token
+counters and metadata; conversation content never leaves the remote host. Remote
+events are merged into the same totals and pace profile, and a session seen on
+two hosts is counted once.
+
+Troubleshooting: a failing host is reported in the sync status (for example
+`Permission denied (publickey)`, `python3: command not found` or
+`timeout after 60s`) and does not affect local data or other hosts; its pull is
+retried on the next sync. Invalid entries in `remote_hosts` show up as a
+`settings` error.
 
 ## Security and privacy
 
