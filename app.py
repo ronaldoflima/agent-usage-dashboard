@@ -8,7 +8,6 @@ response content never enters the database or HTTP responses.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -22,8 +21,11 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Sequence
 from urllib.parse import parse_qs, urlparse
+
+from remote_source import (RemoteError, fetch_remote, parse_remote_arg, parse_timestamp, safe_int, scan,
+                           validate_host)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -92,12 +94,35 @@ PROFILE_MAX_AGE_HOURS = 24
 PROFILE_LOCK = threading.Lock()
 
 
-def read_language() -> str:
+def read_settings() -> dict[str, Any]:
     try:
-        language = json.loads(SETTINGS_PATH.read_text(encoding="utf-8")).get("language")
-    except (OSError, ValueError, AttributeError):
-        return "en"
+        settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return settings if isinstance(settings, dict) else {}
+
+
+def read_language() -> str:
+    language = read_settings().get("language")
     return language if language in LANGUAGES else "en"
+
+
+def load_remote_hosts(cli: Sequence[dict[str, str]] = ()) -> tuple[list[dict[str, str]], list[str]]:
+    configured = read_settings().get("remote_hosts", [])
+    if not isinstance(configured, list):
+        return list(cli), ["remote_hosts must be a list"]
+    hosts: dict[str, dict[str, str]] = {}
+    errors = []
+    for entry in configured:
+        try:
+            host = validate_host(entry)
+        except ValueError as error:
+            errors.append(str(error))
+            continue
+        hosts[host["name"]] = host
+    for host in cli:
+        hosts[host["name"]] = host
+    return list(hosts.values()), errors
 
 
 def refresh_profile(index: "UsageIndex", limits: dict[str, Any], default_timezone: str,
@@ -133,22 +158,6 @@ def refresh_profile(index: "UsageIndex", limits: dict[str, Any], default_timezon
         PROFILE_LOCK.release()
 
 
-def parse_timestamp(value: Any) -> int | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
-    except ValueError:
-        return None
-
-
-def safe_int(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
 def project_root(cwd: str) -> str:
     """Resolve linked worktrees and repository subfolders without running Git."""
     if not cwd:
@@ -179,13 +188,15 @@ def project_root(cwd: str) -> str:
 class UsageIndex:
     """Incremental, content-free index over ~/.claude/projects JSONL files."""
 
+    provider = "claude"
+
     def __init__(self, claude_dir: Path, db_path: Path):
         self.claude_dir = claude_dir
-        self.projects_dir = claude_dir / "projects"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(db_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.lock = threading.Lock()
+        self.remote_status: dict[str, dict[str, Any]] = {}
         self._create_schema()
 
     def _create_schema(self) -> None:
@@ -210,7 +221,8 @@ class UsageIndex:
                 output_tokens INTEGER NOT NULL,
                 cache_read_tokens INTEGER NOT NULL,
                 cache_creation_tokens INTEGER NOT NULL,
-                thinking_tokens INTEGER NOT NULL
+                thinking_tokens INTEGER NOT NULL,
+                host TEXT NOT NULL DEFAULT 'local'
             );
             CREATE INDEX IF NOT EXISTS idx_usage_time ON usage_events(timestamp_ms);
             CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_events(session_id, timestamp_ms);
@@ -218,104 +230,59 @@ class UsageIndex:
             CREATE INDEX IF NOT EXISTS idx_usage_source ON usage_events(source_path);
             """
         )
+        columns = {row[1] for row in self.connection.execute("PRAGMA table_info(usage_events)")}
+        if "host" not in columns:
+            self.connection.execute("ALTER TABLE usage_events ADD COLUMN host TEXT NOT NULL DEFAULT 'local'")
         self.connection.commit()
 
-    def refresh(self) -> dict[str, int]:
+    def refresh(self, remotes: Sequence[dict[str, str]] = (), command: list[str] | None = None) -> dict[str, Any]:
         started = time.monotonic()
-        files_seen = lines_seen = events_written = 0
-        if not self.projects_dir.exists():
-            return {"files": 0, "lines": 0, "events": 0, "elapsed_ms": 0}
+        with self.lock, self.connection:
+            totals = self._ingest(scan(self.provider, self.claude_dir, self._cursors("")), "", "local")
+        statuses = [self._refresh_remote(host, command) for host in remotes]
+        return {**totals, "remotes": statuses, "elapsed_ms": round((time.monotonic() - started) * 1000)}
 
+    def _cursors(self, prefix: str) -> dict[str, list[int]]:
+        rows = self.connection.execute("SELECT path, offset, size, mtime_ns FROM source_files")
+        return {path[len(prefix):]: [offset, size, mtime] for path, offset, size, mtime in rows
+                if path.startswith(prefix)}
+
+    def _ingest(self, records: Iterable[dict[str, Any]], prefix: str, host: str) -> dict[str, int]:
+        files = lines = events = 0
+        for record in records:
+            self._apply(record, prefix, host)
+            files += 1
+            lines += record["lines"]
+            events += len(record["events"])
+        return {"files": files, "lines": lines, "events": events}
+
+    def _apply(self, record: dict[str, Any], prefix: str, host: str) -> None:
+        path = prefix + record["path"]
+        if record["reset"]:
+            self.connection.execute("DELETE FROM usage_events WHERE source_path = ?", (path,))
+        for event in record["events"]:
+            self._upsert_event({**event, "source_path": path, "host": host})
+        self.connection.execute(
+            """INSERT INTO source_files(path, offset, size, mtime_ns) VALUES (?, ?, ?, ?)
+               ON CONFLICT(path) DO UPDATE SET
+                 offset=excluded.offset, size=excluded.size, mtime_ns=excluded.mtime_ns""",
+            (path, record["offset"], record["size"], record["mtime_ns"]),
+        )
+
+    def _refresh_remote(self, host: dict[str, str], command: list[str] | None) -> dict[str, Any]:
+        name = host["name"]
         with self.lock:
-            for path in self.projects_dir.rglob("*.jsonl"):
-                try:
-                    stat = path.stat()
-                except OSError:
-                    continue
-                relative = str(path.relative_to(self.claude_dir))
-                previous = self.connection.execute(
-                    "SELECT offset, size, mtime_ns FROM source_files WHERE path = ?", (relative,)
-                ).fetchone()
-                if previous and previous[1] == stat.st_size and previous[2] == stat.st_mtime_ns:
-                    continue
-
-                files_seen += 1
-                offset = int(previous[0]) if previous and stat.st_size >= previous[0] else 0
-                if previous and offset == 0:
-                    self.connection.execute("DELETE FROM usage_events WHERE source_path = ?", (relative,))
-
-                committed_offset = offset
-                try:
-                    with path.open("rb") as handle:
-                        handle.seek(offset)
-                        while True:
-                            line_start = handle.tell()
-                            raw = handle.readline()
-                            if not raw:
-                                break
-                            if not raw.endswith(b"\n"):
-                                committed_offset = line_start
-                                break
-                            committed_offset = handle.tell()
-                            lines_seen += 1
-                            event = self._extract_event(raw, relative)
-                            if event is not None:
-                                self._upsert_event(event)
-                                events_written += 1
-                except OSError:
-                    continue
-
-                self.connection.execute(
-                    """INSERT INTO source_files(path, offset, size, mtime_ns)
-                       VALUES (?, ?, ?, ?)
-                       ON CONFLICT(path) DO UPDATE SET
-                         offset=excluded.offset, size=excluded.size, mtime_ns=excluded.mtime_ns""",
-                    (relative, committed_offset, stat.st_size, stat.st_mtime_ns),
-                )
-            self.connection.commit()
-
-        return {
-            "files": files_seen,
-            "lines": lines_seen,
-            "events": events_written,
-            "elapsed_ms": round((time.monotonic() - started) * 1000),
-        }
-
-    @staticmethod
-    def _extract_event(raw: bytes, source_path: str) -> dict[str, Any] | None:
+            cursors = self._cursors(f"{name}:")
         try:
-            row = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return None
-        if row.get("type") != "assistant" or not isinstance(row.get("message"), dict):
-            return None
-        message = row["message"]
-        usage = message.get("usage")
-        timestamp_ms = parse_timestamp(row.get("timestamp"))
-        if not isinstance(usage, dict) or timestamp_ms is None:
-            return None
-
-        session_id = str(row.get("sessionId") or row.get("session_id") or "unknown")
-        message_id = str(message.get("id") or row.get("uuid") or "")
-        if not message_id:
-            message_id = hashlib.sha256(raw).hexdigest()
-        cwd = str(row.get("cwd") or "")
-        project = Path(cwd).name if cwd else "unknown"
-        details = usage.get("output_tokens_details") or {}
-        return {
-            "event_key": f"{session_id}:{message_id}",
-            "source_path": source_path,
-            "timestamp_ms": timestamp_ms,
-            "session_id": session_id,
-            "model": str(message.get("model") or "unknown"),
-            "cwd": cwd,
-            "project": project,
-            "input_tokens": safe_int(usage.get("input_tokens")),
-            "output_tokens": safe_int(usage.get("output_tokens")),
-            "cache_read_tokens": safe_int(usage.get("cache_read_input_tokens")),
-            "cache_creation_tokens": safe_int(usage.get("cache_creation_input_tokens")),
-            "thinking_tokens": safe_int(details.get("thinking_tokens")),
-        }
+            records = fetch_remote(host, self.provider, cursors, command)
+        except RemoteError as error:
+            status: dict[str, Any] = {"host": name, "ok": False, "error": str(error)}
+        else:
+            with self.lock, self.connection:
+                status = {"host": name, "ok": True, **self._ingest(records, f"{name}:", name)}
+        status["synced_at"] = datetime.now(timezone.utc).isoformat()
+        self.remote_status[name] = status
+        return status
 
     def _upsert_event(self, event: dict[str, Any]) -> None:
         columns = tuple(event.keys())
@@ -535,6 +502,7 @@ class QuotaClient:
 class DashboardHandler(BaseHTTPRequestHandler):
     index: UsageIndex
     quota: QuotaClient
+    cli_remotes: list[dict[str, str]] = []
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
@@ -554,8 +522,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except (ValueError, AttributeError) as error:
             self._json({"ok": False, "error": str(error)}, status=400)
             return
+        settings = read_settings()
+        settings["language"] = language
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_PATH.write_text(json.dumps({"language": language}), encoding="utf-8")
+        SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
         self._json({"ok": True, "language": language})
 
     def _update(self) -> None:
@@ -602,7 +572,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._profile()
             return
         if parsed.path == "/api/health":
-            self._json({"ok": True, "version": VERSION})
+            self._json({"ok": True, "version": VERSION, "remotes": {
+                "claude": list(self.index.remote_status.values()),
+                "codex": list(self.codex_index.remote_status.values())}})
             return
         self._static(parsed.path)
 
@@ -633,7 +605,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": str(error)}, status=400)
             return
         index = self.codex_index if codex else self.index
-        scan = index.refresh() if query.get("sync") == ["1"] else None
+        scan = None
+        if query.get("sync") == ["1"]:
+            hosts, errors = load_remote_hosts(self.cli_remotes)
+            scan = index.refresh(hosts)
+            scan["remotes"] += [{"host": "settings", "ok": False, "error": error} for error in errors]
         result = index.dashboard(start_ms, end_ms, bucket_ms)
         if codex:
             # Building from the already-indexed counters requires no network access.
@@ -703,6 +679,8 @@ def main() -> None:
     parser.add_argument("--db", type=Path, default=ROOT / ".cache" / "usage.sqlite3")
     parser.add_argument("--codex-dir", type=Path, default=DEFAULT_CODEX_DIR)
     parser.add_argument("--codex-bin", default="codex", help="Codex CLI executable for official limit reads")
+    parser.add_argument("--remote", action="append", default=[], type=parse_remote_arg, metavar="NAME=SSH_TARGET",
+                        help="pull usage logs from a remote host over SSH (repeatable; also .cache/settings.json remote_hosts)")
     parser.add_argument("--codex-db", type=Path, default=ROOT / ".cache" / "codex-usage.sqlite3")
     parser.add_argument("--snapshots-db", type=Path, default=ROOT / ".cache" / "quota-snapshots.sqlite3")
     parser.add_argument("--timezone", default="UTC", help="IANA timezone for the Codex historical profile")
@@ -716,6 +694,7 @@ def main() -> None:
     DashboardHandler.quota = QuotaClient(args.claude_dir.expanduser())
     DashboardHandler.codex_index = CodexIndex(args.codex_dir.expanduser(), args.codex_db)
     DashboardHandler.codex_quota = CodexQuotaClient(args.codex_dir.expanduser(), args.codex_bin)
+    DashboardHandler.cli_remotes = args.remote
     DashboardHandler.snapshots = SnapshotStore(args.snapshots_db)
     DashboardHandler.profile_timezone = args.timezone
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)

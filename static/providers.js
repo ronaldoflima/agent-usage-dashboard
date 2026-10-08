@@ -145,4 +145,17 @@ function renderCodexCurve() {
   note.textContent = `${limit.label} · ${profile ? `${paceModeLabel()} · ${profile.sample_hours} ${tr('horas com dados')}` : tr('Estimativa linear')} · ${samples.length} ${tr('snapshots neste ciclo')}. ${tr('Sem interpolação em lacunas maiores que 30 min. Projeção não é medição.')}`;
 }
 
-if (typeof module !== 'undefined') module.exports = { quotaSamples };
+function remoteSyncSummary(scans, translate, formatTime) {
+  const failures = [], failed = new Set(), synced = new Map();
+  for (const [provider, scan] of scans) {
+    for (const status of scan?.remotes || []) {
+      if (status.ok) { synced.set(status.host, status.synced_at); continue; }
+      failed.add(status.host);
+      failures.push(`${status.host} (${provider}): ${translate('falha no host remoto:')} ${status.error}`);
+    }
+  }
+  return [...failures, ...[...synced].filter(([host]) => !failed.has(host))
+    .map(([host, at]) => `${host}: ${translate('sincronizado às')} ${formatTime(at)}`)];
+}
+
+if (typeof module !== 'undefined') module.exports = { quotaSamples, remoteSyncSummary };

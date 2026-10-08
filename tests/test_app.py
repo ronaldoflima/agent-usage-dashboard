@@ -251,6 +251,47 @@ class LanguageSettingTest(unittest.TestCase):
                     server.shutdown()
                     server.server_close()
 
+    def test_saving_language_keeps_other_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text(json.dumps({"remote_hosts": [{"name": "box", "ssh_target": "user@example-host"}]}))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            with patch.object(app, "SETTINGS_PATH", path):
+                thread.start()
+                try:
+                    self.assertEqual(self.post(server.server_port, {"language": "es"}), 200)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved["language"], "es")
+            self.assertEqual(saved["remote_hosts"][0]["name"], "box")
+
+
+class RemoteHostsConfigTest(unittest.TestCase):
+    def test_merges_settings_and_cli_and_reports_invalid_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text(json.dumps({"remote_hosts": [
+                {"name": "box", "ssh_target": "user@example-host"},
+                {"name": "bad", "ssh_target": "-oProxyCommand=x"},
+                {"name": "other", "ssh_target": "example-alias", "codex_dir": "/srv/codex"},
+            ]}))
+            with patch.object(app, "SETTINGS_PATH", path):
+                hosts, errors = app.load_remote_hosts([{"name": "box", "ssh_target": "cli-target"}])
+        self.assertEqual(hosts, [{"name": "box", "ssh_target": "cli-target"},
+                                 {"name": "other", "ssh_target": "example-alias", "codex_dir": "/srv/codex"}])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("bad", errors[0])
+
+    def test_missing_or_malformed_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            with patch.object(app, "SETTINGS_PATH", path):
+                self.assertEqual(app.load_remote_hosts(), ([], []))
+                path.write_text(json.dumps({"remote_hosts": "box"}))
+                self.assertEqual(app.load_remote_hosts(), ([], ["remote_hosts must be a list"]))
 
 if __name__ == "__main__":
     unittest.main()
