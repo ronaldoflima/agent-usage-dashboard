@@ -73,7 +73,7 @@ def apply_update() -> tuple[int, dict[str, Any]]:
         result = _git(*command)
         if result.returncode != 0:
             return 500, {"ok": False, "error": (result.stderr.strip().splitlines() or ["git failed"])[-1]}
-        restart = bool(os.environ.get("INVOCATION_ID"))
+        restart = bool(os.environ.get("INVOCATION_ID") or os.environ.get("USAGE_DASHBOARD_SUPERVISED"))
         if restart:
             threading.Timer(0.5, os._exit, [0]).start()
         return 200, {"ok": True, "updated": True, "version": latest, "restart": restart}
