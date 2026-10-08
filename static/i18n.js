@@ -1,5 +1,6 @@
 const TRANSLATIONS = {
   en: {
+    'Atualizar para': 'Update to', 'Atualizar o dashboard e reiniciar o servidor?': 'Update the dashboard and restart the server?', 'Atualizando…': 'Updating…', 'Atualizado. Reinicie o servidor manualmente.': 'Updated. Restart the server manually.', 'Falha ao atualizar:': 'Update failed:',
     'Atualização automática': 'Automatic refresh', 'Sincronizar agora': 'Sync now',
     'Último sync oficial:': 'Last official sync:', 'Sem sync oficial': 'No official sync yet', 'Sync pendente:': 'Sync pending:',
     'Language': 'Language', 'Ritmo de Uso': 'Usage Pace', 'Limites oficiais e atividade local, sem ler o conteúdo das conversas.': 'Official limits and local activity, without reading conversation content.',
@@ -16,6 +17,7 @@ const TRANSLATIONS = {
   },
   'pt-BR': {},
   es: {
+    'Atualizar para': 'Actualizar a', 'Atualizar o dashboard e reiniciar o servidor?': '¿Actualizar el dashboard y reiniciar el servidor?', 'Atualizando…': 'Actualizando…', 'Atualizado. Reinicie o servidor manualmente.': 'Actualizado. Reinicie el servidor manualmente.', 'Falha ao atualizar:': 'Error al actualizar:',
     'Atualização automática': 'Actualización automática', 'Sincronizar agora': 'Sincronizar ahora',
     'Último sync oficial:': 'Última sincronización oficial:', 'Sem sync oficial': 'Sin sincronización oficial', 'Sync pendente:': 'Sincronización pendiente:',
     'Language': 'Idioma', 'Ritmo de Uso': 'Ritmo de uso', 'Limites oficiais e atividade local, sem ler o conteúdo das conversas.': 'Límites oficiales y actividad local, sin leer el contenido de las conversaciones.',

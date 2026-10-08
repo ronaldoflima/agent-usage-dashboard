@@ -609,22 +609,56 @@ load(); scheduleSync();
 setInterval(() => { render(); renderSyncTimestamp(); }, 60_000);
 
 async function checkForUpdate() {
-  const link = document.querySelector('.github-link');
+  const button = document.getElementById('updateButton');
   const parse = tag => (String(tag).match(/^v?(\d+)\.(\d+)\.(\d+)/) || []).slice(1).map(Number);
   const newer = (a, b) => { for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i]; return false; };
   try {
     const { version } = await (await fetch('/api/health')).json();
     const local = parse(version);
-    if (!link || local.length !== 3) return;
+    if (!button || local.length !== 3) return;
     const tags = await (await fetch('https://api.github.com/repos/ronaldoflima/agent-usage-dashboard/tags?per_page=30')).json();
     const latest = tags.map(t => t.name).filter(n => parse(n).length === 3).sort((a, b) => newer(parse(a), parse(b)) ? -1 : 1)[0];
     if (!latest || !newer(parse(latest), local)) return;
-    const badge = document.createElement('span');
-    badge.className = 'update-badge';
-    badge.textContent = `update ${latest}`;
-    link.append(badge);
-    link.title = `GitHub — ${version} → ${latest}`;
-    link.href = `https://github.com/ronaldoflima/agent-usage-dashboard/releases/tag/${latest}`;
+    button.textContent = `${tr('Atualizar para')} ${latest}`;
+    button.title = `${version} → ${latest}`;
+    button.hidden = false;
+    button.onclick = () => runUpdate(button, latest);
   } catch {}
 }
+
+async function runUpdate(button, latest) {
+  if (!confirm(tr('Atualizar o dashboard e reiniciar o servidor?'))) return;
+  const status = document.getElementById('syncStatus');
+  button.disabled = true;
+  button.textContent = tr('Atualizando…');
+  try {
+    const response = await fetch('/api/update', { method: 'POST', headers: { 'X-Requested-With': 'dashboard' } });
+    const result = await response.json();
+    if (!result.ok) throw new Error(result.error || response.status);
+    if (!result.restart) { status.textContent = tr('Atualizado. Reinicie o servidor manualmente.'); button.hidden = true; return; }
+    for (let attempt = 0; attempt < 40; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      try {
+        const health = await (await fetch('/api/health', { cache: 'no-store' })).json();
+        if (health.version === result.version) {
+          try { sessionStorage.setItem('syncAfterUpdate', '1'); } catch {}
+          location.reload();
+          return;
+        }
+      } catch {}
+    }
+    throw new Error('timeout');
+  } catch (error) {
+    status.textContent = `${tr('Falha ao atualizar:')} ${error.message}`;
+    button.disabled = false;
+    button.textContent = `${tr('Atualizar para')} ${latest}`;
+  }
+}
+
 checkForUpdate();
+try {
+  if (sessionStorage.getItem('syncAfterUpdate')) {
+    sessionStorage.removeItem('syncAfterUpdate');
+    document.getElementById('syncNow').click();
+  }
+} catch {}
