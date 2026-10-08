@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import threading
@@ -37,6 +38,49 @@ def _local_version() -> str | None:
 
 
 VERSION = _local_version()
+SEMVER_TAG = re.compile(r"^v\d+\.\d+\.\d+$")
+UPDATE_LOCK = threading.Lock()
+
+
+def _git(*args: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+
+
+def _tag_key(tag: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in tag[1:].split("."))
+
+
+def apply_update() -> tuple[int, dict[str, Any]]:
+    if not UPDATE_LOCK.acquire(blocking=False):
+        return 409, {"ok": False, "error": "update already running"}
+    try:
+        if _git("status", "--porcelain", "--untracked-files=no").stdout.strip():
+            return 409, {"ok": False, "error": "checkout has local changes"}
+        if _git("fetch", "--tags", "--force", "origin").returncode != 0:
+            return 502, {"ok": False, "error": "git fetch failed"}
+        tags = [tag for tag in _git("tag", "-l", "v*").stdout.split() if SEMVER_TAG.match(tag)]
+        latest = max(tags, key=_tag_key, default=None)
+        current = _local_version()
+        if not latest or (current and SEMVER_TAG.match(current) and _tag_key(latest) <= _tag_key(current)):
+            return 200, {"ok": True, "updated": False, "version": current}
+        branch = _git("branch", "--show-current").stdout.strip()
+        if branch == "main":
+            command = ("merge", "--ff-only", latest)
+        elif not branch:
+            command = ("checkout", "--detach", latest)
+        else:
+            return 409, {"ok": False, "error": f"checkout is on branch {branch}; switch to main to update"}
+        result = _git(*command)
+        if result.returncode != 0:
+            return 500, {"ok": False, "error": (result.stderr.strip().splitlines() or ["git failed"])[-1]}
+        restart = bool(os.environ.get("INVOCATION_ID"))
+        if restart:
+            threading.Timer(0.5, os._exit, [0]).start()
+        return 200, {"ok": True, "updated": True, "version": latest, "restart": restart}
+    except (OSError, subprocess.SubprocessError):
+        return 500, {"ok": False, "error": "git unavailable"}
+    finally:
+        UPDATE_LOCK.release()
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_BETA = "oauth-2025-04-20"
 PROFILE_PATH = ROOT / ".cache" / "usage-profile.json"
@@ -424,6 +468,19 @@ class QuotaClient:
 class DashboardHandler(BaseHTTPRequestHandler):
     index: UsageIndex
     quota: QuotaClient
+
+    def do_POST(self) -> None:  # noqa: N802
+        if urlparse(self.path).path != "/api/update":
+            self.send_error(404)
+            return
+        origin = self.headers.get("Origin")
+        local = self.client_address[0] in ("127.0.0.1", "::1")
+        same_origin = origin is None or urlparse(origin).netloc == self.headers.get("Host")
+        if not (local and same_origin and self.headers.get("X-Requested-With") == "dashboard"):
+            self._json({"ok": False, "error": "forbidden"}, 403)
+            return
+        status, payload = apply_update()
+        self._json(payload, status)
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)

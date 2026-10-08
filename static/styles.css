@@ -189,8 +189,9 @@ code { color: #c9b9a8; }
 .icon-button:hover { background: var(--panel-2); color: var(--ink); border-color: var(--line); }
 .github-link { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border: 1px solid var(--accent); border-radius: 8px; color: var(--accent); font-size: 13px; font-weight: 600; text-decoration: none; }
 .github-link:hover { background: var(--accent); color: var(--bg, #fff); }
-.update-badge { padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--bg); font-size: 11px; font-weight: 700; }
-.github-link:hover .update-badge { background: var(--bg); color: var(--accent); }
+.update-button { height: 36px; padding: 0 14px; border: 0; border-radius: 8px; background: var(--accent); color: var(--bg); font-size: 13px; font-weight: 700; cursor: pointer; }
+.update-button[hidden] { display: none; }
+.update-button:disabled { opacity: .6; cursor: wait; }
 .icon-button:disabled { opacity: .45; cursor: wait; }
 .icon-button[aria-busy="true"] svg { animation: sync-spin 1s linear infinite; }
 .header-toolbar :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
