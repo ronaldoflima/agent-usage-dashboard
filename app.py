@@ -8,7 +8,6 @@ response content never enters the database or HTTP responses.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -24,6 +23,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+from remote_source import (RemoteError, claude_event, fetch_remote, parse_remote_arg, parse_timestamp,
+                           safe_int, scan, validate_host)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -131,22 +133,6 @@ def refresh_profile(index: "UsageIndex", limits: dict[str, Any], default_timezon
         return True
     finally:
         PROFILE_LOCK.release()
-
-
-def parse_timestamp(value: Any) -> int | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
-    except ValueError:
-        return None
-
-
-def safe_int(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
 
 
 def project_root(cwd: str) -> str:
@@ -258,7 +244,7 @@ class UsageIndex:
                                 break
                             committed_offset = handle.tell()
                             lines_seen += 1
-                            event = self._extract_event(raw, relative)
+                            event = claude_event(raw, relative)
                             if event is not None:
                                 self._upsert_event(event)
                                 events_written += 1
@@ -279,42 +265,6 @@ class UsageIndex:
             "lines": lines_seen,
             "events": events_written,
             "elapsed_ms": round((time.monotonic() - started) * 1000),
-        }
-
-    @staticmethod
-    def _extract_event(raw: bytes, source_path: str) -> dict[str, Any] | None:
-        try:
-            row = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return None
-        if row.get("type") != "assistant" or not isinstance(row.get("message"), dict):
-            return None
-        message = row["message"]
-        usage = message.get("usage")
-        timestamp_ms = parse_timestamp(row.get("timestamp"))
-        if not isinstance(usage, dict) or timestamp_ms is None:
-            return None
-
-        session_id = str(row.get("sessionId") or row.get("session_id") or "unknown")
-        message_id = str(message.get("id") or row.get("uuid") or "")
-        if not message_id:
-            message_id = hashlib.sha256(raw).hexdigest()
-        cwd = str(row.get("cwd") or "")
-        project = Path(cwd).name if cwd else "unknown"
-        details = usage.get("output_tokens_details") or {}
-        return {
-            "event_key": f"{session_id}:{message_id}",
-            "source_path": source_path,
-            "timestamp_ms": timestamp_ms,
-            "session_id": session_id,
-            "model": str(message.get("model") or "unknown"),
-            "cwd": cwd,
-            "project": project,
-            "input_tokens": safe_int(usage.get("input_tokens")),
-            "output_tokens": safe_int(usage.get("output_tokens")),
-            "cache_read_tokens": safe_int(usage.get("cache_read_input_tokens")),
-            "cache_creation_tokens": safe_int(usage.get("cache_creation_input_tokens")),
-            "thinking_tokens": safe_int(details.get("thinking_tokens")),
         }
 
     def _upsert_event(self, event: dict[str, Any]) -> None:

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from codex_usage import CodexIndex, CodexQuotaClient, SnapshotStore, normalize_limits
+from remote_source import codex_records
 
 
 def line(kind, payload, timestamp="2026-09-24T12:00:00Z"):
@@ -74,12 +75,12 @@ class CodexIndexTest(unittest.TestCase):
         inherited = usage((1000, 800, 100, 50), (1000, 800, 100, 50), "2026-09-24T11:00:00Z")
         current = usage((1100, 850, 120, 60))
         reset = usage((200, 100, 30, 20), (50, 30, 10, 5), "2026-09-24T12:02:00Z")
-        records, _ = CodexIndex._parse(io.BytesIO(self.header + self.context + inherited + current + reset), "x")
+        records, _ = codex_records(io.BytesIO(self.header + self.context + inherited + current + reset), "x")
         self.assertEqual(len(records), 2)
         self.assertEqual(sum(r["input_tokens"] + r["cache_read_tokens"] + r["output_tokens"] for r in records), 180)
 
     def test_unknown_baseline_is_not_invented(self):
-        records, _ = CodexIndex._parse(io.BytesIO(self.header + usage((10000, 8000, 100, 50))), "x")
+        records, _ = codex_records(io.BytesIO(self.header + usage((10000, 8000, 100, 50))), "x")
         self.assertEqual(records, [])
 
     def test_archive_does_not_duplicate(self):
