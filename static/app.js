@@ -132,9 +132,13 @@ async function load(custom, sync = false, force = false) {
     try { state.snapshots = await (await fetch('/api/snapshots')).json(); } catch { state.snapshots = {}; }
     render();
     renderSyncTimestamp();
-    document.getElementById('syncStatus').textContent = [['claude', state.limits], ['codex', state.codex?.limits]]
-      .filter(([provider, payload]) => providerEnabled(provider) && payload?.error)
-      .map(([provider, payload]) => `${provider}: ${tr('Sync pendente:')} ${payload.error}${payload.retry_after_seconds ? ` · ${Math.ceil(payload.retry_after_seconds / 60)} min` : ''}`).join(' · ');
+    document.getElementById('syncStatus').textContent = [
+      ...[['claude', state.limits], ['codex', state.codex?.limits]]
+        .filter(([provider, payload]) => providerEnabled(provider) && payload?.error)
+        .map(([provider, payload]) => `${provider}: ${tr('Sync pendente:')} ${payload.error}${payload.retry_after_seconds ? ` · ${Math.ceil(payload.retry_after_seconds / 60)} min` : ''}`),
+      ...remoteSyncSummary([['claude', state.data?.scan], ['codex', state.codex?.activity?.scan]], tr,
+        at => new Date(at).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' })),
+    ].join(' · ');
   } catch (error) {
     document.getElementById('updated').textContent = tr('falha na atualização');
     document.getElementById('limits').innerHTML = `<div class="panel error">${esc(error.message)}</div>`;

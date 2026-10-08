@@ -2,7 +2,7 @@ const TRANSLATIONS = {
   en: {
     'Atualizar para': 'Update to', 'Atualizar o dashboard e reiniciar o servidor?': 'Update the dashboard and restart the server?', 'Atualizando…': 'Updating…', 'Atualizado. Reinicie o servidor manualmente.': 'Updated. Restart the server manually.', 'Falha ao atualizar:': 'Update failed:',
     'Atualização automática': 'Automatic refresh', 'Sincronizar agora': 'Sync now',
-    'Último sync oficial:': 'Last official sync:', 'Sem sync oficial': 'No official sync yet', 'Sync pendente:': 'Sync pending:',
+    'Último sync oficial:': 'Last official sync:', 'Sem sync oficial': 'No official sync yet', 'falha no host remoto:': 'remote host failed:', 'sincronizado às': 'synced at', 'Sync pendente:': 'Sync pending:',
     'Language': 'Language', 'Ritmo de Uso': 'Usage Pace', 'Limites oficiais e atividade local, sem ler o conteúdo das conversas.': 'Official limits and local activity, without reading conversation content.',
     'carregando…': 'loading…', '1 hora': '1 hour', '5 horas': '5 hours', '24 horas': '24 hours', '7 dias': '7 days',
     'De': 'From', 'Até': 'To', 'Aplicar': 'Apply', 'Ritmo semanal': 'Weekly pace', 'Perfil histórico': 'Historical profile', 'Seg–sex equilibrado': 'Balanced weekdays', 'Histórico + equilibrado': 'Historical + balanced',
@@ -19,7 +19,7 @@ const TRANSLATIONS = {
   es: {
     'Atualizar para': 'Actualizar a', 'Atualizar o dashboard e reiniciar o servidor?': '¿Actualizar el dashboard y reiniciar el servidor?', 'Atualizando…': 'Actualizando…', 'Atualizado. Reinicie o servidor manualmente.': 'Actualizado. Reinicie el servidor manualmente.', 'Falha ao atualizar:': 'Error al actualizar:',
     'Atualização automática': 'Actualización automática', 'Sincronizar agora': 'Sincronizar ahora',
-    'Último sync oficial:': 'Última sincronización oficial:', 'Sem sync oficial': 'Sin sincronización oficial', 'Sync pendente:': 'Sincronización pendiente:',
+    'Último sync oficial:': 'Última sincronización oficial:', 'Sem sync oficial': 'Sin sincronización oficial', 'falha no host remoto:': 'falló el host remoto:', 'sincronizado às': 'sincronizado a las', 'Sync pendente:': 'Sincronización pendiente:',
     'Language': 'Idioma', 'Ritmo de Uso': 'Ritmo de uso', 'Limites oficiais e atividade local, sem ler o conteúdo das conversas.': 'Límites oficiales y actividad local, sin leer el contenido de las conversaciones.',
     'carregando…': 'cargando…', '1 hora': '1 hora', '5 horas': '5 horas', '24 horas': '24 horas', '7 dias': '7 días',
     'De': 'Desde', 'Até': 'Hasta', 'Aplicar': 'Aplicar', 'Ritmo semanal': 'Ritmo semanal', 'Perfil histórico': 'Perfil histórico', 'Seg–sex equilibrado': 'Días laborables equilibrados', 'Histórico + equilibrado': 'Histórico + equilibrado',
