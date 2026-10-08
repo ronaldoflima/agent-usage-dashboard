@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from urllib.parse import parse_qs, urlparse
 
-from remote_source import (RemoteError, fetch_remote, parse_remote_arg, parse_timestamp, safe_int, scan,
-                           validate_host)
+from remote_source import (RemoteError, fetch_remote, parse_remote_arg, parse_timestamp, push_remote, safe_int,
+                           scan, valid_name, validate_host)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -185,6 +185,10 @@ def project_root(cwd: str) -> str:
     return str(path)
 
 
+EVENT_COLUMNS = ("event_key", "timestamp_ms", "session_id", "model", "cwd", "project", "input_tokens",
+                 "output_tokens", "cache_read_tokens", "cache_creation_tokens", "thinking_tokens")
+
+
 class UsageIndex:
     """Incremental, content-free index over ~/.claude/projects JSONL files."""
 
@@ -193,7 +197,7 @@ class UsageIndex:
     def __init__(self, claude_dir: Path, db_path: Path):
         self.claude_dir = claude_dir
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(db_path, check_same_thread=False)
+        self.connection = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         self.connection.row_factory = sqlite3.Row
         self.lock = threading.Lock()
         self.remote_status: dict[str, dict[str, Any]] = {}
@@ -235,11 +239,13 @@ class UsageIndex:
             self.connection.execute("ALTER TABLE usage_events ADD COLUMN host TEXT NOT NULL DEFAULT 'local'")
         self.connection.commit()
 
-    def refresh(self, remotes: Sequence[dict[str, str]] = (), command: list[str] | None = None) -> dict[str, Any]:
+    def refresh(self, remotes: Sequence[dict[str, Any]] = (), command: list[str] | None = None,
+                push_command: list[str] | None = None) -> dict[str, Any]:
         started = time.monotonic()
         with self.lock, self.connection:
             totals = self._ingest(scan(self.provider, self.claude_dir, self._cursors("")), "", "local")
         statuses = [self._refresh_remote(host, command) for host in remotes]
+        statuses += [self._push_remote(host, push_command) for host in remotes if "push" in host]
         return {**totals, "remotes": statuses, "elapsed_ms": round((time.monotonic() - started) * 1000)}
 
     def _cursors(self, prefix: str) -> dict[str, list[int]]:
@@ -261,7 +267,7 @@ class UsageIndex:
         if record["reset"]:
             self.connection.execute("DELETE FROM usage_events WHERE source_path = ?", (path,))
         for event in record["events"]:
-            self._upsert_event({**event, "source_path": path, "host": host})
+            self._upsert_event({**{key: event[key] for key in EVENT_COLUMNS}, "source_path": path, "host": host})
         self.connection.execute(
             """INSERT INTO source_files(path, offset, size, mtime_ns) VALUES (?, ?, ?, ?)
                ON CONFLICT(path) DO UPDATE SET
@@ -275,13 +281,25 @@ class UsageIndex:
             cursors = self._cursors(f"{name}:")
         try:
             records = fetch_remote(host, self.provider, cursors, command)
-        except RemoteError as error:
-            status: dict[str, Any] = {"host": name, "ok": False, "error": str(error)}
-        else:
             with self.lock, self.connection:
-                status = {"host": name, "ok": True, **self._ingest(records, f"{name}:", name)}
+                status: dict[str, Any] = {"host": name, "ok": True, **self._ingest(records, f"{name}:", name)}
+        except RemoteError as error:
+            status = {"host": name, "ok": False, "error": str(error)}
+        except (sqlite3.Error, KeyError, TypeError, ValueError) as error:
+            status = {"host": name, "ok": False, "error": f"invalid record: {error}"[:200]}
         status["synced_at"] = datetime.now(timezone.utc).isoformat()
         self.remote_status[name] = status
+        return status
+
+    def _push_remote(self, host: dict[str, Any], command: list[str] | None) -> dict[str, Any]:
+        name = host["name"]
+        try:
+            status: dict[str, Any] = {"host": name, "push": True, "ok": True,
+                                      **push_remote(host, self.provider, self.claude_dir, command)}
+        except RemoteError as error:
+            status = {"host": name, "push": True, "ok": False, "error": str(error)}
+        status["synced_at"] = datetime.now(timezone.utc).isoformat()
+        self.remote_status[f"{name}:push"] = status
         return status
 
     def _upsert_event(self, event: dict[str, Any]) -> None:
@@ -669,7 +687,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
         print(f"[{self.log_date_time_string()}] {fmt % args}")
 
 
+def ingest(argv: Sequence[str]) -> None:
+    from codex_usage import CodexIndex
+    parser = argparse.ArgumentParser(prog="app.py ingest",
+                                     description="store usage records pushed by another host (JSON lines on stdin)")
+    parser.add_argument("--as", dest="name", required=True, help="name of the pushing host")
+    parser.add_argument("--provider", choices=("claude", "codex"), required=True)
+    parser.add_argument("--cursors", action="store_true", help="print the stored cursors for that host and exit")
+    parser.add_argument("--db", type=Path, help="index database (default: the dashboard's for the provider)")
+    args = parser.parse_args(argv)
+    if not valid_name(args.name):
+        parser.error(f"invalid host name: {args.name!r}")
+    codex = args.provider == "codex"
+    db = args.db or ROOT / ".cache" / ("codex-usage.sqlite3" if codex else "usage.sqlite3")
+    index = (CodexIndex if codex else UsageIndex)(Path.home(), db)
+    prefix = f"{args.name}:"
+    if args.cursors:
+        print(json.dumps(index._cursors(prefix)))
+        return
+    try:
+        with index.lock, index.connection:
+            totals = index._ingest((json.loads(line) for line in sys.stdin if line.strip()), prefix, args.name)
+    except (sqlite3.Error, KeyError, TypeError, ValueError) as error:
+        sys.exit(f"invalid records: {error}"[:200])
+    print(json.dumps(totals))
+
+
 def main() -> None:
+    if sys.argv[1:2] == ["ingest"]:
+        ingest(sys.argv[2:])
+        return
     from codex_usage import CodexIndex, CodexQuotaClient, SnapshotStore, DEFAULT_CODEX_DIR
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
     parser = argparse.ArgumentParser(description="Local Claude and Codex usage dashboard")

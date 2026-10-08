@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -243,13 +244,9 @@ def ssh_command(target: str) -> list[str]:
     return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", target, "python3", "-"]
 
 
-def fetch_remote(host, provider, cursors, command=None, timeout=60):
-    root = host.get(f"{provider}_dir") or DEFAULT_REMOTE_DIRS[provider]
-    script = (Path(__file__).read_text(encoding="utf-8")
-              + f"\n_emit({provider!r}, {root!r}, json.loads({json.dumps(cursors)!r}))\n")
+def _run(command: list[str], payload: bytes, timeout: int) -> bytes:
     try:
-        result = subprocess.run(command or ssh_command(host["ssh_target"]), input=script.encode(),
-                                capture_output=True, timeout=timeout)
+        result = subprocess.run(command, input=payload, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise RemoteError(f"timeout after {timeout}s") from None
     except OSError as error:
@@ -257,17 +254,63 @@ def fetch_remote(host, provider, cursors, command=None, timeout=60):
     if result.returncode != 0:
         detail = result.stderr.decode(errors="replace").strip().splitlines()
         raise RemoteError((detail[-1] if detail else f"exit {result.returncode}")[:200])
+    return result.stdout
+
+
+def fetch_remote(host, provider, cursors, command=None, timeout=60):
+    root = host.get(f"{provider}_dir") or DEFAULT_REMOTE_DIRS[provider]
+    script = (Path(__file__).read_text(encoding="utf-8")
+              + f"\n_emit({provider!r}, {root!r}, json.loads({json.dumps(cursors)!r}))\n")
+    stdout = _run(command or ssh_command(host["ssh_target"]), script.encode(), timeout)
     try:
-        return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        return [json.loads(line) for line in stdout.splitlines() if line.strip()]
     except ValueError:
         raise RemoteError("invalid response") from None
 
 
-def validate_host(entry) -> dict[str, str]:
+def _shell_path(path: str) -> str:
+    if path == "~" or path.startswith("~/"):
+        return "~/" + shlex.quote(path[2:]) if path[2:] else "~"
+    return shlex.quote(path)
+
+
+def ingest_command(host, args: list[str]) -> list[str]:
+    app = host["push"]["dir"].rstrip("/") + "/app.py"
+    return [*ssh_command(host["ssh_target"])[:-2],
+            " ".join(["python3", _shell_path(app), "ingest", *map(shlex.quote, args)])]
+
+
+def push_remote(host, provider, root, command=None, timeout=300) -> dict[str, int]:
+    args = ["--as", host["push"]["as"], "--provider", provider]
+
+    def call(extra, payload, seconds):
+        argv = [*command, *args, *extra] if command else ingest_command(host, [*args, *extra])
+        try:
+            return json.loads(_run(argv, payload, seconds))
+        except ValueError:
+            raise RemoteError("invalid response") from None
+
+    cursors = call(["--cursors"], b"", 60)
+    if not isinstance(cursors, dict):
+        raise RemoteError("invalid response")
+    payload = "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in scan(provider, root, cursors))
+    if not payload:
+        return {"files": 0, "lines": 0, "events": 0}
+    totals = call([], payload.encode(), timeout)
+    if not isinstance(totals, dict):
+        raise RemoteError("invalid response")
+    return {key: safe_int(totals.get(key)) for key in ("files", "lines", "events")}
+
+
+def valid_name(name) -> bool:
+    return isinstance(name, str) and bool(HOST_NAME.fullmatch(name)) and name != "local"
+
+
+def validate_host(entry) -> dict[str, Any]:
     if not isinstance(entry, dict):
         raise ValueError("remote host must be an object")
     name, target = entry.get("name"), entry.get("ssh_target")
-    if not isinstance(name, str) or not HOST_NAME.fullmatch(name) or name == "local":
+    if not valid_name(name):
         raise ValueError(f"invalid remote host name: {name!r}")
     if not isinstance(target, str) or not SSH_TARGET.fullmatch(target):
         raise ValueError(f"invalid ssh_target for {name}")
@@ -277,6 +320,13 @@ def validate_host(entry) -> dict[str, str]:
             if not isinstance(entry[key], str) or not entry[key].strip():
                 raise ValueError(f"invalid {key} for {name}")
             host[key] = entry[key]
+    if "push" in entry:
+        push = entry["push"]
+        if not isinstance(push, dict) or not isinstance(push.get("dir"), str) or not push["dir"].strip():
+            raise ValueError(f"invalid push.dir for {name}")
+        if not valid_name(push.get("as")):
+            raise ValueError(f"invalid push.as for {name}")
+        host["push"] = {"dir": push["dir"], "as": push["as"]}
     return host
 
 

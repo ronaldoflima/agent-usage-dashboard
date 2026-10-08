@@ -27,4 +27,7 @@ test('remote sync summary lists failures per provider and successes once per hos
   ], text => `<${text}>`, () => '12:00');
   assert.deepEqual(lines, ['other (claude): <falha no host remoto:> timeout after 60s', 'box: <sincronizado às> 12:00']);
   assert.deepEqual(remoteSyncSummary([['claude', undefined]], t => t, () => ''), []);
+  assert.deepEqual(remoteSyncSummary([
+    ['claude', { remotes: [{ host: 'box', ok: true, synced_at: at }, { host: 'box', push: true, ok: false, error: 'exit 2', synced_at: at }] }],
+  ], text => text, () => '12:00'), ['box ↑ (claude): falha no host remoto: exit 2', 'box: sincronizado às 12:00']);
 });

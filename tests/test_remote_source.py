@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -6,7 +7,9 @@ from pathlib import Path
 
 from app import UsageIndex
 from codex_usage import CodexIndex
-from remote_source import RemoteError, fetch_remote, parse_remote_arg, scan, validate_host
+from remote_source import RemoteError, fetch_remote, ingest_command, parse_remote_arg, scan, validate_host
+
+APP = str(Path(__file__).resolve().parent.parent / "app.py")
 
 
 def claude_line(message_id, output=30, timestamp="2026-09-22T10:00:00Z", session="session-1"):
@@ -178,3 +181,109 @@ class RemoteIndexTest(unittest.TestCase):
         self.assertTrue(result["remotes"][0]["ok"])
         self.assertEqual(codex.dashboard(0, 2_000_000_000_000, 60_000)["totals"]["messages"], 1)
         codex.connection.close()
+
+
+class PushTest(unittest.TestCase):
+    LOCAL_PYTHON = [sys.executable, "-"]
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.local, self.empty, self.target_db = base / "local", base / "empty", base / "target.sqlite3"
+        (self.local / "projects" / "p").mkdir(parents=True)
+        self.empty.mkdir()
+        self.index = UsageIndex(self.local, base / "index.sqlite3")
+        self.host = {"name": "vps", "ssh_target": "user@example-host", "claude_dir": str(self.empty),
+                     "push": {"dir": "~/apps/dashboard", "as": "mac"}}
+        self.push_command = [sys.executable, APP, "ingest", "--db", str(self.target_db)]
+
+    def tearDown(self):
+        self.index.connection.close()
+        self.temp.cleanup()
+
+    def pushes(self, result):
+        return [status for status in result["remotes"] if status.get("push")]
+
+    def test_pushes_local_records_incrementally_under_the_given_name(self):
+        log = self.local / "projects" / "p" / "a.jsonl"
+        log.write_text(claude_line("m1", session="s-mac"))
+        result = self.index.refresh([self.host], command=self.LOCAL_PYTHON, push_command=self.push_command)
+        [push] = self.pushes(result)
+        self.assertEqual((push["host"], push["ok"], push["files"], push["events"]), ("vps", True, 1, 1))
+        target = UsageIndex(self.empty, self.target_db)
+        self.assertEqual([tuple(row) for row in target.connection.execute("SELECT source_path, host FROM usage_events")],
+                         [("mac:projects/p/a.jsonl", "mac")])
+        target.connection.close()
+        again = self.index.refresh([self.host], command=self.LOCAL_PYTHON, push_command=self.push_command)
+        self.assertEqual(self.pushes(again)[0]["files"], 0)
+        with log.open("a") as handle:
+            handle.write(claude_line("m2", session="s-mac"))
+        third = self.index.refresh([self.host], command=self.LOCAL_PYTHON, push_command=self.push_command)
+        self.assertEqual(self.pushes(third)[0]["events"], 1)
+        self.assertEqual(self.index.remote_status["vps:push"]["ok"], True)
+
+    def test_push_failure_is_reported_without_touching_local_data(self):
+        (self.local / "projects" / "p" / "a.jsonl").write_text(claude_line("m1"))
+        failing = [sys.executable, "-c", "import sys; sys.exit('python3: cannot open file')"]
+        [push] = self.pushes(self.index.refresh([self.host], command=self.LOCAL_PYTHON, push_command=failing))
+        self.assertFalse(push["ok"])
+        self.assertIn("cannot open file", push["error"])
+        self.assertEqual(self.index.dashboard(0, 2_000_000_000_000, 60_000)["totals"]["messages"], 1)
+
+    def test_hosts_without_push_are_only_pulled(self):
+        del self.host["push"]
+        result = self.index.refresh([self.host], command=self.LOCAL_PYTHON, push_command=self.push_command)
+        self.assertEqual(self.pushes(result), [])
+
+    def test_codex_push_stores_events(self):
+        (self.local / "sessions").mkdir()
+        (self.local / "sessions" / "r.jsonl").write_text(codex_lines())
+        codex = CodexIndex(self.local, Path(self.temp.name) / "codex.sqlite3")
+        host = {**self.host, "codex_dir": str(self.empty)}
+        command = [sys.executable, APP, "ingest", "--db", str(self.target_db)]
+        [push] = self.pushes(codex.refresh([host], command=self.LOCAL_PYTHON, push_command=command))
+        self.assertEqual((push["ok"], push["events"]), (True, 1))
+        codex.connection.close()
+        target = CodexIndex(self.empty, self.target_db)
+        self.assertEqual(target.connection.execute("SELECT source_path FROM limit_observations").fetchall(), [])
+        self.assertEqual(target.dashboard(0, 2_000_000_000_000, 60_000)["totals"]["messages"], 1)
+        target.connection.close()
+
+
+class IngestCommandTest(unittest.TestCase):
+    def run_ingest(self, db, args, payload=""):
+        return subprocess.run([sys.executable, APP, "ingest", "--db", str(db), *args], input=payload,
+                              capture_output=True, text=True)
+
+    def test_ingest_drops_unknown_columns_and_rejects_bad_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "target.sqlite3"
+            event = {"event_key": "s:m", "timestamp_ms": 1, "session_id": "s", "model": "m", "cwd": "",
+                     "project": "x", "input_tokens": 1, "output_tokens": 1, "cache_read_tokens": 0,
+                     "cache_creation_tokens": 0, "thinking_tokens": 0, "x) VALUES (1);--": 1}
+            record = {"path": "projects/p/a.jsonl", "size": 1, "mtime_ns": 1, "offset": 1, "reset": False,
+                      "lines": 1, "events": [event], "observation": None}
+            done = self.run_ingest(db, ["--as", "mac", "--provider", "claude"], json.dumps(record) + "\n")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(json.loads(done.stdout)["events"], 1)
+            cursors = self.run_ingest(db, ["--as", "mac", "--provider", "claude", "--cursors"])
+            self.assertEqual(json.loads(cursors.stdout), {"projects/p/a.jsonl": [1, 1, 1]})
+            self.assertNotEqual(self.run_ingest(db, ["--as", "local", "--provider", "claude"]).returncode, 0)
+            self.assertNotEqual(self.run_ingest(db, ["--as", "mac", "--provider", "claude"], "not json\n").returncode, 0)
+
+    def test_remote_command_quotes_the_install_dir(self):
+        host = {"name": "vps", "ssh_target": "user@example-host", "push": {"dir": "~/my apps/dash/", "as": "mac"}}
+        command = ingest_command(host, ["--as", "mac", "--cursors"])
+        self.assertEqual(command[:-1], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--",
+                                        "user@example-host"])
+        self.assertEqual(command[-1], "python3 ~/'my apps/dash/app.py' ingest --as mac --cursors")
+
+
+class ValidatePushTest(unittest.TestCase):
+    def test_push_settings(self):
+        entry = {"name": "vps", "ssh_target": "h", "push": {"dir": "~/app", "as": "mac", "extra": 1}}
+        self.assertEqual(validate_host(entry)["push"], {"dir": "~/app", "as": "mac"})
+        for push in ({"dir": "~/app", "as": "local"}, {"dir": "", "as": "mac"}, {"as": "mac"}, "~/app",
+                     {"dir": "~/app", "as": "a:b"}):
+            with self.assertRaises(ValueError):
+                validate_host({"name": "vps", "ssh_target": "h", "push": push})
