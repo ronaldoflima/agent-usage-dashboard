@@ -540,10 +540,15 @@ document.getElementById('clearSessionSelection').addEventListener('click', () =>
   renderActivitySelection();
 });
 
+function saveLanguage() {
+  try { fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ language }) }).catch(() => {}); } catch {}
+}
 document.getElementById('language').value = language;
+saveLanguage();
 document.getElementById('language').addEventListener('change', event => {
   language = event.target.value;
   try { localStorage.setItem('language', language); } catch {}
+  saveLanguage();
   updateFormatters(); translateStatic();
   TOKEN_COMPONENTS[2].label = tr('Escrita em cache'); TOKEN_COMPONENTS[3].label = tr('Leitura de cache');
   render(); renderSyncTimestamp();

@@ -84,6 +84,16 @@ def apply_update() -> tuple[int, dict[str, Any]]:
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_BETA = "oauth-2025-04-20"
 PROFILE_PATH = ROOT / ".cache" / "usage-profile.json"
+SETTINGS_PATH = ROOT / ".cache" / "settings.json"
+LANGUAGES = ("en", "pt-BR", "es")
+
+
+def read_language() -> str:
+    try:
+        language = json.loads(SETTINGS_PATH.read_text(encoding="utf-8")).get("language")
+    except (OSError, ValueError, AttributeError):
+        return "en"
+    return language if language in LANGUAGES else "en"
 
 
 def parse_timestamp(value: Any) -> int | None:
@@ -470,9 +480,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
     quota: QuotaClient
 
     def do_POST(self) -> None:  # noqa: N802
-        if urlparse(self.path).path != "/api/update":
+        path = urlparse(self.path).path
+        if path == "/api/settings":
+            self._settings()
+        elif path == "/api/update":
+            self._update()
+        else:
             self.send_error(404)
+
+    def _settings(self) -> None:
+        try:
+            body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 4096)) or b"{}")
+            language = body.get("language")
+            if language not in LANGUAGES:
+                raise ValueError("unsupported language")
+        except (ValueError, AttributeError) as error:
+            self._json({"ok": False, "error": str(error)}, status=400)
             return
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_PATH.write_text(json.dumps({"language": language}), encoding="utf-8")
+        self._json({"ok": True, "language": language})
+
+    def _update(self) -> None:
         origin = self.headers.get("Origin")
         local = self.client_address[0] in ("127.0.0.1", "::1")
         same_origin = origin is None or urlparse(origin).netloc == self.headers.get("Host")
@@ -525,7 +554,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
             generated = datetime.fromisoformat(profile["generated_at"].replace("Z", "+00:00"))
             age_hours = (datetime.now(timezone.utc) - generated).total_seconds() / 3600
-            self._json({"ok": True, "stale": age_hours > 7 * 24, "age_hours": round(age_hours, 1), **profile})
+            self._json({"ok": True, "stale": age_hours > 7 * 24, "age_hours": round(age_hours, 1), **profile,
+                        "language": read_language()})
         except (OSError, KeyError, ValueError, json.JSONDecodeError) as error:
             self._json({
                 "ok": False,
