@@ -276,6 +276,7 @@ metadata come back. Official quota still comes from the local account.
    | `ssh_target` | yes | Anything `ssh` accepts: `user@host`, a `~/.ssh/config` alias |
    | `claude_dir` | no | Claude config dir on the remote host (default `~/.claude`) |
    | `codex_dir` | no | Codex home on the remote host (default `~/.codex`) |
+   | `push` | no | Also send this machine's history to the host; see below |
 
    Alternatively pass `--remote NAME=SSH_TARGET` (repeatable; the flag wins on a
    name clash):
@@ -289,6 +290,31 @@ metadata come back. Official quota still comes from the local account.
    while; later syncs only read what changed. The sync status line shows each
    host's last pull or its error, and `/api/health` lists the latest status per
    host and provider.
+
+#### Pushing this machine's history to a host
+
+Pulling only fills the dashboard you sync from. If the remote host also runs the
+dashboard (for its own pace indicator or to view the combined history there), add
+`push` to its entry and each sync also sends this machine's local records to it,
+over the same SSH access:
+
+```json
+{"name": "server", "ssh_target": "user@example-host",
+ "push": {"dir": "~/.local/share/agent-usage-dashboard", "as": "laptop"}}
+```
+
+- `dir`: the dashboard checkout on the remote host (the install script's default
+  is `~/.local/share/agent-usage-dashboard`). It must be a version that has
+  `app.py ingest`.
+- `as`: the name this machine gets in the remote dashboard (same rules as `name`).
+
+The remote checkout stores the records with
+`python3 app.py ingest --as NAME --provider claude|codex`, which reads JSON lines on
+stdin and writes to the dashboard's index; the running service shows them on its
+next page load, without a restart. Pushes are incremental like pulls. Only the
+local history is pushed, never what was pulled from other hosts, so pulling from
+and pushing to the same host does not duplicate anything. Do not also configure
+the remote host to pull from this machine.
 
 How it works: per host and provider, the dashboard runs
 `ssh -o BatchMode=yes -o ConnectTimeout=10 -- SSH_TARGET python3 -` and pipes

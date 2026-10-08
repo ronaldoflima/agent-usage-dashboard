@@ -149,9 +149,10 @@ function remoteSyncSummary(scans, translate, formatTime) {
   const failures = [], failed = new Set(), synced = new Map();
   for (const [provider, scan] of scans) {
     for (const status of scan?.remotes || []) {
-      if (status.ok) { synced.set(status.host, status.synced_at); continue; }
-      failed.add(status.host);
-      failures.push(`${status.host} (${provider}): ${translate('falha no host remoto:')} ${status.error}`);
+      const label = status.push ? `${status.host} ↑` : status.host;
+      if (status.ok) { synced.set(label, status.synced_at); continue; }
+      failed.add(label);
+      failures.push(`${label} (${provider}): ${translate('falha no host remoto:')} ${status.error}`);
     }
   }
   return [...failures, ...[...synced].filter(([host]) => !failed.has(host))
