@@ -188,6 +188,8 @@ counters without combining quota percentages or token volumes.
   `Claude Code-credentials` item with `security find-generic-password` on each
   quota sync. The first read may show a Keychain prompt; choose **Always Allow**
   so background syncs (including the launchd agent) do not stall.
+- Optional [remote hosts](#remote-hosts): the same token counters and metadata
+  from their Claude Code and Codex logs, read over SSH.
 
 Plan utilization and reset times are official values returned by Anthropic.
 The local token counters are diagnostic activity measurements; they are not an
@@ -226,11 +228,36 @@ python3 app.py --claude-dir /another/path/.claude
 For safety, the server binds to `127.0.0.1` by default. Do not expose it to a
 network without adding authentication.
 
+### Remote hosts
+
+To include token history from other machines where you run Claude Code or Codex, list them
+in `.cache/settings.json` (git-ignored) or pass `--remote NAME=SSH_TARGET` (repeatable; the
+flag wins on a name clash):
+
+```json
+{
+  "remote_hosts": [
+    {"name": "server", "ssh_target": "user@example-host"},
+    {"name": "box", "ssh_target": "example-alias", "claude_dir": "~/.claude", "codex_dir": "~/.codex"}
+  ]
+}
+```
+
+On **Sync now** (and auto-sync) the dashboard runs
+`ssh -o BatchMode=yes -- SSH_TARGET python3 -` per host and pipes `remote_source.py` to it.
+The script reads the remote logs and prints only counters and metadata; conversation content
+never leaves the remote host. Requirements: key-based SSH access (any target `ssh` accepts,
+including `~/.ssh/config` aliases) and `python3` on the remote host. Remote events are merged
+into the same totals and pace profile; official quota still comes from the local account. A
+failing host is reported in the sync status and does not affect local data. Settings changes
+are picked up on the next sync, without a restart.
+
 ## Security and privacy
 
 - The SQLite database, generated profile, caches, and environment files are
   ignored by Git.
 - The OAuth token is read into memory and sent only to `api.anthropic.com`.
+- Remote hosts send only counters and metadata over SSH; nothing is sent elsewhere.
 - The OAuth usage endpoint is internal and undocumented, so it may change
   without notice. The dashboard reports failures without exposing credentials.
 - Review the code before changing the bind address to a network interface.
