@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+# pacebar: ritmo do limite semanal do Claude (uso real ÷ uso esperado até agora), numa linha (widget custom-command do ccstatusline).
+#
+# Lê o JSON da statusline no stdin (rate_limits.seven_day). A curva esperada vem do perfil
+# histórico do agent-usage-dashboard (CLAUDE_USAGE_URL, default http://127.0.0.1:8787);
+# sem dashboard, usa a curva linear e marca o valor com "~". Mesmos limiares do dashboard:
+# > 1.08x acelerado (▲), < 0.82x tranquilo (▽), entre os dois no ritmo (=).
+import json
+import os
+import sys
+import tempfile
+import time
+import urllib.request
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+WEEK_H = 168
+MIN_PROFILE_HOURS = 168
+CACHE_TTL = 3600
+BASE_URL = os.environ.get("CLAUDE_USAGE_URL", "http://127.0.0.1:8787").rstrip("/")
+URL = BASE_URL + "/api/profile"
+CACHE = os.path.join(tempfile.gettempdir(), f"pacebar.{os.getuid()}.profile.json")
+
+
+def load_profile():
+    try:
+        if time.time() - os.path.getmtime(CACHE) < CACHE_TTL:
+            with open(CACHE) as fh:
+                return json.load(fh) or None
+    except (OSError, ValueError):
+        pass
+    profile = None
+    try:
+        with urllib.request.urlopen(URL, timeout=1) as resp:
+            data = json.load(resp)
+        if data.get("ok") and len(data.get("weekly", {}).get("slots") or []) == WEEK_H:
+            profile = data
+    except Exception:
+        pass
+    try:
+        with open(CACHE, "w") as fh:
+            json.dump(profile, fh)
+    except OSError:
+        pass
+    return profile
+
+
+def aligned_slots(profile, start):
+    weekly = profile["weekly"]
+    hours = profile.get("sample_hours")
+    reliability = max(0.0, min(1.0, hours / MIN_PROFILE_HOURS)) if isinstance(hours, (int, float)) else 1.0
+    slots = [reliability * v + (1 - reliability) / WEEK_H for v in weekly["slots"]]
+    local = start.astimezone(ZoneInfo(weekly["timezone"]))
+    offset = (local.weekday() * 24 + local.hour + local.minute / 60 + local.second / 3600
+              - weekly["reset_weekday"] * 24 - weekly["reset_hour"] + WEEK_H) % WEEK_H
+    whole, frac = int(offset), offset - int(offset)
+    return [slots[(i + whole) % WEEK_H] * (1 - frac) + slots[(i + whole + 1) % WEEK_H] * frac for i in range(WEEK_H)]
+
+
+def expected_pct(slots, elapsed_h):
+    pos = max(0.0, min(float(WEEK_H), elapsed_h))
+    whole, frac = int(pos), pos - int(pos)
+    done = sum(slots[:whole]) + (slots[whole] * frac if whole < WEEK_H else 0)
+    return min(100.0, done * 100)
+
+
+def dashboard_limits():
+    try:
+        with urllib.request.urlopen(BASE_URL + "/api/limits", timeout=3) as resp:
+            limits = json.load(resp).get("limits") or []
+        weekly = next(x for x in limits if x.get("kind") == "weekly_all")
+        resets = datetime.fromisoformat(weekly["resets_at"]).timestamp()
+        return {"rate_limits": {"seven_day": {"used_percentage": weekly["utilization"], "resets_at": resets}}}
+    except Exception:
+        return {}
+
+
+def main():
+    if sys.stdin.isatty():
+        data = dashboard_limits()
+    else:
+        try:
+            data = json.load(sys.stdin)
+        except ValueError:
+            return
+    period = ((data.get("rate_limits") or {}).get("seven_day")) or {}
+    used, resets = period.get("used_percentage"), period.get("resets_at")
+    if used is None or not resets:
+        return
+    now = time.time()
+    start = float(resets) - WEEK_H * 3600
+    if not start <= now < float(resets):
+        return
+    elapsed_h = max(1 / 60, (now - start) / 3600)
+    profile = load_profile()
+    if profile:
+        expected = expected_pct(aligned_slots(profile, datetime.fromtimestamp(start, timezone.utc)), elapsed_h)
+        mark = ""
+    else:
+        expected = min(100.0, elapsed_h / WEEK_H * 100)
+        mark = "~"
+    used = float(used)
+    ratio = used / expected if expected > 0 else 0.0
+    if used >= 100:
+        arrow = "■"
+    elif ratio > 1.08:
+        arrow = "▲"
+    elif ratio < 0.82:
+        arrow = "▽"
+    else:
+        arrow = "="
+    print(f"ritmo {mark}{ratio:.2f}x {arrow} (ideal {expected:.0f}%)")
+
+
+if __name__ == "__main__":
+    main()
