@@ -181,7 +181,11 @@ counters without combining quota percentages or token volumes.
 - `~/.claude/.credentials.json`: the OAuth token stays in the local server
   process and is used exclusively to request
   `https://api.anthropic.com/api/oauth/usage`. The token is never included in
-  the dashboard's HTTP responses.
+  the dashboard's HTTP responses. On macOS, where Claude Code keeps the token
+  in the Keychain instead of that file, the dashboard reads the
+  `Claude Code-credentials` item with `security find-generic-password` on each
+  quota sync. The first read may show a Keychain prompt; choose **Always Allow**
+  so background syncs (including the launchd agent) do not stall.
 
 Plan utilization and reset times are official values returned by Anthropic.
 The local token counters are diagnostic activity measurements; they are not an

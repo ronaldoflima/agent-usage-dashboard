@@ -37,6 +37,36 @@ class QuotaCacheTest(unittest.TestCase):
             self.assertEqual(request.call_count, 1)
 
 
+class QuotaCredentialsTest(unittest.TestCase):
+    def test_reads_credentials_file_when_present(self):
+        with tempfile.TemporaryDirectory() as temp:
+            Path(temp, '.credentials.json').write_text('{"claudeAiOauth":{"accessToken":"file-token"}}')
+            with patch('app.subprocess.run') as run:
+                self.assertEqual(QuotaClient(Path(temp))._access_token(), 'file-token')
+                run.assert_not_called()
+
+    def test_falls_back_to_macos_keychain_without_credentials_file(self):
+        keychain = app.subprocess.CompletedProcess([], 0, stdout='{"claudeAiOauth":{"accessToken":"keychain-token"}}\n')
+        with tempfile.TemporaryDirectory() as temp, patch('app.sys.platform', 'darwin'), \
+                patch('app.subprocess.run', return_value=keychain) as run:
+            self.assertEqual(QuotaClient(Path(temp))._access_token(), 'keychain-token')
+            self.assertIn('Claude Code-credentials', run.call_args.args[0])
+
+    def test_missing_keychain_item_reports_both_locations(self):
+        missing = app.subprocess.CompletedProcess([], 44, stdout='', stderr='not found')
+        with tempfile.TemporaryDirectory() as temp, patch('app.sys.platform', 'darwin'), \
+                patch('app.subprocess.run', return_value=missing):
+            with self.assertRaisesRegex(OSError, 'Keychain'):
+                QuotaClient(Path(temp))._access_token()
+
+    def test_missing_file_off_macos_does_not_touch_keychain(self):
+        with tempfile.TemporaryDirectory() as temp, patch('app.sys.platform', 'linux'), \
+                patch('app.subprocess.run') as run:
+            with self.assertRaises(OSError):
+                QuotaClient(Path(temp))._access_token()
+            run.assert_not_called()
+
+
 class UsageIndexTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -83,6 +84,7 @@ def apply_update() -> tuple[int, dict[str, Any]]:
         UPDATE_LOCK.release()
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_BETA = "oauth-2025-04-20"
+KEYCHAIN_SERVICE = "Claude Code-credentials"
 PROFILE_PATH = ROOT / ".cache" / "usage-profile.json"
 SETTINGS_PATH = ROOT / ".cache" / "settings.json"
 LANGUAGES = ("en", "pt-BR", "es")
@@ -422,10 +424,30 @@ class QuotaClient:
                 return {"ok": False, "error": str(error), "limits": [], "retry_after_seconds": delay}
             return {**self.cached, "cache_age_seconds": 0}
 
+    def _access_token(self) -> str:
+        try:
+            raw = self.credentials_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            if sys.platform != "darwin":
+                raise
+            try:
+                result = subprocess.run(
+                    ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+                    capture_output=True, text=True, timeout=10,
+                )
+            except subprocess.SubprocessError as error:
+                raise OSError(f"macOS Keychain read failed: {error}") from None
+            if result.returncode != 0:
+                raise OSError(
+                    f"Claude credentials not found in {self.credentials_path} or the macOS Keychain "
+                    f"item '{KEYCHAIN_SERVICE}'. Log in with Claude Code first."
+                ) from None
+            raw = result.stdout
+        return json.loads(raw)["claudeAiOauth"]["accessToken"]
+
     def _fetch(self) -> dict[str, Any]:
-        oauth = json.loads(self.credentials_path.read_text(encoding="utf-8"))["claudeAiOauth"]
         request = urllib.request.Request(USAGE_URL, headers={
-            "Authorization": f"Bearer {oauth['accessToken']}",
+            "Authorization": f"Bearer {self._access_token()}",
             "anthropic-beta": USAGE_BETA, "Content-Type": "application/json",
             "User-Agent": "claude-usage-local/1.0",
         })
