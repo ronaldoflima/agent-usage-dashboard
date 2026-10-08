@@ -251,7 +251,10 @@ The expected curve comes from `/api/profile` at `http://127.0.0.1:8787`.
 Set `CLAUDE_USAGE_URL` to use another dashboard address. The profile is cached
 for one hour; if unavailable, the command uses a linear curve and prefixes the
 ratio with `~`. It uses the historical mode independently of the browser's
-selected pace mode. Ratios above `1.08x` show `▲`, below `0.82x` show `▽`, and
+selected pace mode. The labels follow the dashboard language (English, Portuguese
+or Spanish), saved server-side in `.cache/settings.json` when you change it in the
+UI and picked up after the one-hour profile cache expires; without the dashboard
+they are English. Ratios above `1.08x` show `▲`, below `0.82x` show `▽`, and
 otherwise show `=`; exhausted quota shows `■`. Missing or expired quota windows
 produce no output.
 

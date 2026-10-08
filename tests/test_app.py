@@ -5,7 +5,12 @@ import urllib.error
 from unittest.mock import patch
 from pathlib import Path
 
-from app import QuotaClient, UsageIndex
+import threading
+import urllib.request
+from http.server import ThreadingHTTPServer
+
+import app
+from app import DashboardHandler, QuotaClient, UsageIndex
 
 
 class QuotaCacheTest(unittest.TestCase):
@@ -138,6 +143,34 @@ class UsageIndexTest(unittest.TestCase):
         ]})
         self.assertEqual(normalized["limits"][0]["label"], "Sessão")
         self.assertEqual(normalized["limits"][1]["label"], "Semanal · Opus")
+
+
+class LanguageSettingTest(unittest.TestCase):
+    def post(self, port, payload):
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/api/settings", json.dumps(payload).encode(),
+                                         {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status
+        except urllib.error.HTTPError as error:
+            return error.code
+
+    def test_language_is_saved_validated_and_defaults_to_english(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cache" / "settings.json"
+            server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            with patch.object(app, "SETTINGS_PATH", path):
+                thread.start()
+                try:
+                    self.assertEqual(app.read_language(), "en")
+                    self.assertEqual(self.post(server.server_port, {"language": "pt-BR"}), 200)
+                    self.assertEqual(app.read_language(), "pt-BR")
+                    self.assertEqual(self.post(server.server_port, {"language": "fr"}), 400)
+                    self.assertEqual(app.read_language(), "pt-BR")
+                finally:
+                    server.shutdown()
+                    server.server_close()
 
 
 if __name__ == "__main__":

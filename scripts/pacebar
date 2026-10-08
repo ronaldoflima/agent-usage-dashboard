@@ -4,6 +4,7 @@
 # Reads the statusline JSON from stdin (rate_limits.seven_day). The expected curve comes from the
 # agent-usage-dashboard historical profile (CLAUDE_USAGE_URL, default http://127.0.0.1:8787);
 # without the dashboard it uses a linear curve and prefixes the value with "~". Same thresholds as the dashboard:
+# Labels follow the dashboard language (en, pt-BR, es), defaulting to English.
 # > 1.08x fast (▲), < 0.82x slow (▽), in between on pace (=).
 import json
 import os
@@ -19,6 +20,7 @@ MIN_PROFILE_HOURS = 168
 CACHE_TTL = 3600
 BASE_URL = os.environ.get("CLAUDE_USAGE_URL", "http://127.0.0.1:8787").rstrip("/")
 URL = BASE_URL + "/api/profile"
+LABELS = {"en": ("pace", "expected"), "pt-BR": ("ritmo", "ideal"), "es": ("ritmo", "ideal")}
 CACHE = os.path.join(tempfile.gettempdir(), f"pacebar.{os.getuid()}.profile.json")
 
 
@@ -93,6 +95,7 @@ def main():
         return
     elapsed_h = max(1 / 60, (now - start) / 3600)
     profile = load_profile()
+    pace_label, expected_label = LABELS.get((profile or {}).get("language"), LABELS["en"])
     if profile:
         expected = expected_pct(aligned_slots(profile, datetime.fromtimestamp(start, timezone.utc)), elapsed_h)
         mark = ""
@@ -109,7 +112,7 @@ def main():
         arrow = "▽"
     else:
         arrow = "="
-    print(f"pace {mark}{ratio:.2f}x {arrow} (expected {expected:.0f}%)")
+    print(f"{pace_label} {mark}{ratio:.2f}x {arrow} ({expected_label} {expected:.0f}%)")
 
 
 if __name__ == "__main__":
