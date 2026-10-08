@@ -1,6 +1,5 @@
 const state = { range: '5h', custom: null, data: null, limits: null, profile: null, weeklyData: null };
-state.selectedSessions = new Set();
-state.selectedProjects = new Set();
+state.selection = Object.fromEntries(['claude', 'codex'].map(provider => [provider, { sessions: new Set(), projects: new Set() }]));
 state.compactRankings = false;
 try { state.compactRankings = localStorage.getItem('compactRankings') === 'true'; } catch {}
 function renderRankingMode() {
@@ -37,6 +36,13 @@ const TOKEN_COMPONENTS = [
   { key: 'cache_creation_tokens', label: tr('Escrita em cache'), color: '#d97757' },
   { key: 'cache_read_tokens', label: tr('Leitura de cache'), color: '#a184c4' },
 ];
+const ACTIVITY_VIEWS = {
+  claude: { data: () => state.data, timeline: 'timeline', legend: 'legend', summary: 'sessionSelectionSummary',
+    clear: 'clearSessionSelection', sessions: 'sessionList', projects: 'projects' },
+  codex: { data: () => state.codex?.activity, timeline: 'codexTimeline', legend: 'codexLegend', summary: 'codexSessionSelectionSummary',
+    clear: 'codexClearSessionSelection', sessions: 'codexSessions', projects: 'codexProjects' },
+};
+function activityComponents(provider) { return provider === 'codex' ? TOKEN_COMPONENTS.filter(metric => metric.key !== 'cache_creation_tokens') : TOKEN_COMPONENTS; }
 const DURATIONS = { '15m': 15 * 60e3, '30m': 30 * 60e3, '1h': 60 * 60e3, '5h': 5 * 60 * 60e3, '24h': 24 * 60 * 60e3, '7d': 7 * 24 * 60 * 60e3 };
 let nf, exact;
 function updateFormatters() { nf = new Intl.NumberFormat(locale(), { notation: 'compact', maximumFractionDigits: 1 }); exact = new Intl.NumberFormat(locale()); }
@@ -164,11 +170,7 @@ function render() {
 
 function renderClaude() {
   const d = state.data, t = d.totals;
-  const available = new Set(d.sessions.map(row => row.session_id));
-  for (const id of state.selectedSessions) if (!available.has(id)) state.selectedSessions.delete(id);
-  const availableProjects = new Set((d.projects || []).map(row => row.project_id));
-  for (const id of state.selectedProjects) if (!availableProjects.has(id)) state.selectedProjects.delete(id);
-  pruneHiddenSessionSelection();
+  pruneSelection('claude');
   document.getElementById('totalTokens').textContent = formatTokens(t.total_tokens);
   document.getElementById('freshTokens').textContent = formatTokens(t.fresh_tokens);
   document.getElementById('inputTokens').textContent = formatTokens(t.input_tokens);
@@ -238,13 +240,7 @@ function renderWeeklyCurve() {
   const elapsedSlots = Math.min(168, Math.ceil(elapsedHours));
   const observedTotal = hourly.slice(0, elapsedSlots).reduce((sum, value) => sum + value, 0);
 
-  const expectedPoints = [{ slot: 0, value: 0 }];
-  let expectedSum = 0;
-  for (let slot = 0; slot < 168; slot++) {
-    expectedSum += slots[slot] * 100;
-    expectedPoints.push({ slot: slot + 1, value: expectedSum });
-  }
-
+  const expectedPoints = expectedCurvePoints(slots);
   const actualPoints = [{ slot: 0, value: 0 }];
   let actualSum = 0;
   for (let slot = 0; slot < elapsedSlots; slot++) {
@@ -257,55 +253,92 @@ function renderWeeklyCurve() {
   if (actualPoints.at(-1).slot !== elapsedHours) actualPoints.push({ slot: elapsedHours, value: data.official });
   else actualPoints[actualPoints.length - 1] = { slot: elapsedHours, value: data.official };
 
-  const width = 1000, height = 290, left = 48, right = 18, top = 16, bottom = 36;
-  const plotWidth = width - left - right, plotHeight = height - top - bottom;
-  const x = slot => left + slot / 168 * plotWidth;
-  const y = value => top + (100 - Math.max(0, Math.min(100, value))) / 100 * plotHeight;
-  const path = points => points.map((point, index) => `${index ? 'L' : 'M'} ${x(point.slot).toFixed(1)} ${y(point.value).toFixed(1)}`).join(' ');
-  const actualPath = path(actualPoints);
+  const { top, height, bottom } = CURVE;
+  const x = curveX, y = curveY;
+  const actualPath = curvePath(actualPoints);
   const areaPath = `${actualPath} L ${x(elapsedHours).toFixed(1)} ${y(0).toFixed(1)} L ${x(0).toFixed(1)} ${y(0).toFixed(1)} Z`;
-
-  const horizontal = [0, 25, 50, 75, 100].map(value =>
-    `<g><line x1="${left}" y1="${y(value)}" x2="${width - right}" y2="${y(value)}" class="curve-grid-line"/><text x="${left - 9}" y="${y(value) + 4}" class="curve-axis-label" text-anchor="end">${value}%</text></g>`
-  ).join('');
-  const dayFormatter = new Intl.DateTimeFormat(locale(), { weekday: 'short' });
-  const vertical = Array.from({ length: 8 }, (_, day) => {
-    const slot = day * 24; const date = new Date(data.startMs + slot * 36e5);
-    return `<g><line x1="${x(slot)}" y1="${top}" x2="${x(slot)}" y2="${height - bottom}" class="curve-day-line"/><text x="${x(slot)}" y="${height - 13}" class="curve-axis-label" text-anchor="${day === 0 ? 'start' : day === 7 ? 'end' : 'middle'}">${dayFormatter.format(date)}</text></g>`;
-  }).join('');
   const currentX = x(elapsedHours), currentY = y(data.official);
-
-  const selectedStart = Math.max(0, (state.custom?.start - data.startMs) / 36e5);
-  const selectedEnd = Math.min(168, (state.custom?.end - data.startMs) / 36e5);
-  const hasSelection = Number.isFinite(selectedStart) && selectedStart < selectedEnd;
-  root.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+  const selection = curveSelection(data.startMs);
+  root.innerHTML = `<svg viewBox="0 0 ${CURVE.width} ${height}" preserveAspectRatio="none" aria-hidden="true">
     <defs><linearGradient id="actualArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#7dbb84" stop-opacity=".28"/><stop offset="100%" stop-color="#7dbb84" stop-opacity="0"/></linearGradient></defs>
-    ${horizontal}${vertical}
-    <rect class="curve-selection" x="${hasSelection ? x(selectedStart) : left}" y="${top}" width="${hasSelection ? x(selectedEnd) - x(selectedStart) : 0}" height="${plotHeight}" visibility="${hasSelection ? 'visible' : 'hidden'}"/>
+    ${curveFrame(data.startMs, selection)}
     <path d="${areaPath}" fill="url(#actualArea)"/>
-    <path d="${path(expectedPoints)}" class="curve-expected-line"/>
+    <path d="${curvePath(expectedPoints)}" class="curve-expected-line"/>
     <path d="${actualPath}" class="curve-actual-line"/>
     <line x1="${currentX}" y1="${top}" x2="${currentX}" y2="${height - bottom}" class="curve-now-line"/>
     <circle cx="${currentX}" cy="${currentY}" r="6" class="curve-now-point"/>
     <circle cx="${currentX}" cy="${y(expectedNow)}" r="4" class="curve-expected-point"/>
     ${quotaSamples(state.snapshots?.claude, data.limit).map(sample => `<circle cx="${x((sample.observed_ms - data.startMs) / 36e5)}" cy="${y(sample.utilization)}" r="3" class="curve-now-point"><title>${esc(formatDate(sample.observed_ms))} · ${sample.utilization}%</title></circle>`).join('')}
-    <g class="curve-hover" visibility="hidden">
-      <line y1="${top}" y2="${height - bottom}" class="curve-hover-line"/>
-      <circle r="5" class="curve-expected-point"/>
-      <circle r="5" class="curve-now-point"/>
-    </g>
+    ${CURVE_HOVER}
   </svg><div class="curve-tooltip" role="tooltip" hidden></div>`;
 
-  const dateFormatter = new Intl.DateTimeFormat(locale(), {
-    weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  const { date, percent } = curveFormatters();
+  bindCurveInteraction(root, data.startMs, selection, raw => {
+    // Snap to hourly points, including the latest observation at its exact time.
+    let slot = Math.max(0, Math.min(168, Math.round(raw)));
+    if (Math.abs(raw - elapsedHours) < .5) slot = elapsedHours;
+    const expected = curveInterpolate(expectedPoints, slot);
+    const actual = slot <= elapsedHours ? curveInterpolate(actualPoints, slot) : null;
+    return { slot, expected, actual, html: `<strong>${esc(date.format(new Date(data.startMs + slot * 36e5)))}</strong>
+      <span>${tr('Curva esperada')}: <b>${percent.format(expected)}%</b></span>
+      ${actual === null ? '' : `<span>${tr(slot === elapsedHours ? 'Percentual oficial agora' : 'Uso estimado da semana')}: <b>${percent.format(actual)}%</b></span>
+      <span>${tr('Diferença')}: <b>${actual > expected ? '+' : ''}${percent.format(actual - expected)} pp</b></span>`}` };
   });
-  const percent = new Intl.NumberFormat(locale(), { maximumFractionDigits: 1, minimumFractionDigits: 1 });
-  const interpolate = (points, slot) => {
-    const next = points.findIndex(point => point.slot >= slot);
-    if (next <= 0) return points[0].value;
-    const a = points[next - 1], b = points[next];
-    return a.value + (b.value - a.value) * (slot - a.slot) / (b.slot - a.slot);
+
+  const delta = data.official - expectedNow;
+  summary.innerHTML = `<strong>${data.official.toFixed(0)}%</strong> ${tr("usado")} · ${tr("ideal")} <strong>${expectedNow.toFixed(0)}%</strong> · <span class="${delta > 0 ? 'negative' : 'positive'}">${delta > 0 ? '+' : ''}${delta.toFixed(0)} pp</span>`;
+}
+
+const CURVE = { width: 1000, height: 290, left: 48, right: 18, top: 16, bottom: 36 };
+CURVE.plotWidth = CURVE.width - CURVE.left - CURVE.right;
+CURVE.plotHeight = CURVE.height - CURVE.top - CURVE.bottom;
+const CURVE_HOVER = `<g class="curve-hover" visibility="hidden">
+      <line y1="${CURVE.top}" y2="${CURVE.height - CURVE.bottom}" class="curve-hover-line"/>
+      <circle r="5" class="curve-expected-point"/>
+      <circle r="5" class="curve-now-point"/>
+    </g>`;
+function curveX(slot) { return CURVE.left + slot / 168 * CURVE.plotWidth; }
+function curveY(value) { return CURVE.top + (100 - Math.max(0, Math.min(100, value))) / 100 * CURVE.plotHeight; }
+function curvePath(points) { return points.map((point, index) => `${index ? 'L' : 'M'} ${curveX(point.slot).toFixed(1)} ${curveY(point.value).toFixed(1)}`).join(' '); }
+function curveInterpolate(points, slot) {
+  const next = points.findIndex(point => point.slot >= slot);
+  if (next < 0) return points.at(-1).value;
+  if (next === 0) return points[0].value;
+  const a = points[next - 1], b = points[next];
+  return a.value + (b.value - a.value) * (slot - a.slot) / (b.slot - a.slot);
+}
+function expectedCurvePoints(slots) {
+  const points = [{ slot: 0, value: 0 }];
+  let sum = 0;
+  slots.forEach((weight, slot) => { sum += weight * 100; points.push({ slot: slot + 1, value: sum }); });
+  return points;
+}
+function curveSelection(startMs) {
+  const start = Math.max(0, (state.custom?.start - startMs) / 36e5);
+  const end = Math.min(168, (state.custom?.end - startMs) / 36e5);
+  return Number.isFinite(start) && start < end ? { start, end } : null;
+}
+function curveFrame(startMs, selection) {
+  const { left, right, top, bottom, width, height } = CURVE;
+  const horizontal = [0, 25, 50, 75, 100].map(value =>
+    `<g><line x1="${left}" y1="${curveY(value)}" x2="${width - right}" y2="${curveY(value)}" class="curve-grid-line"/><text x="${left - 9}" y="${curveY(value) + 4}" class="curve-axis-label" text-anchor="end">${value}%</text></g>`
+  ).join('');
+  const dayFormatter = new Intl.DateTimeFormat(locale(), { weekday: 'short' });
+  const vertical = Array.from({ length: 8 }, (_, day) => {
+    const slot = day * 24; const date = new Date(startMs + slot * 36e5);
+    return `<g><line x1="${curveX(slot)}" y1="${top}" x2="${curveX(slot)}" y2="${height - bottom}" class="curve-day-line"/><text x="${curveX(slot)}" y="${height - 13}" class="curve-axis-label" text-anchor="${day === 0 ? 'start' : day === 7 ? 'end' : 'middle'}">${dayFormatter.format(date)}</text></g>`;
+  }).join('');
+  return `${horizontal}${vertical}
+    <rect class="curve-selection" x="${selection ? curveX(selection.start) : left}" y="${top}" width="${selection ? curveX(selection.end) - curveX(selection.start) : 0}" height="${CURVE.plotHeight}" visibility="${selection ? 'visible' : 'hidden'}"/>`;
+}
+function curveFormatters() {
+  return {
+    date: new Intl.DateTimeFormat(locale(), { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    percent: new Intl.NumberFormat(locale(), { maximumFractionDigits: 1, minimumFractionDigits: 1 }),
   };
+}
+function bindCurveInteraction(root, startMs, selection, describe) {
+  const { width, height, left, right, top, bottom, plotWidth } = CURVE;
   const hideTooltip = () => {
     root.querySelector('.curve-tooltip').hidden = true;
     root.querySelector('.curve-hover').setAttribute('visibility', 'hidden');
@@ -318,26 +351,19 @@ function renderWeeklyCurve() {
       hideTooltip();
       return;
     }
-    // Snap to hourly points, including the latest observation at its exact time.
-    let slot = Math.max(0, Math.min(168, Math.round((plotX - left) / plotWidth * 168)));
-    if (Math.abs((plotX - left) / plotWidth * 168 - elapsedHours) < .5) slot = elapsedHours;
-    const expected = interpolate(expectedPoints, slot);
-    const actual = slot <= elapsedHours ? interpolate(actualPoints, slot) : null;
+    const point = describe((plotX - left) / plotWidth * 168);
     const tooltip = root.querySelector('.curve-tooltip');
-    tooltip.innerHTML = `<strong>${esc(dateFormatter.format(new Date(data.startMs + slot * 36e5)))}</strong>
-      <span>${tr('Curva esperada')}: <b>${percent.format(expected)}%</b></span>
-      ${actual === null ? '' : `<span>${tr(slot === elapsedHours ? 'Percentual oficial agora' : 'Uso estimado da semana')}: <b>${percent.format(actual)}%</b></span>
-      <span>${tr('Diferença')}: <b>${actual > expected ? '+' : ''}${percent.format(actual - expected)} pp</b></span>`}`;
+    tooltip.innerHTML = point.html;
     tooltip.hidden = false;
     const hover = root.querySelector('.curve-hover');
     hover.setAttribute('visibility', 'visible');
     const line = hover.querySelector('line');
-    line.setAttribute('x1', x(slot)); line.setAttribute('x2', x(slot));
+    line.setAttribute('x1', curveX(point.slot)); line.setAttribute('x2', curveX(point.slot));
     const dots = hover.querySelectorAll('circle');
-    dots[0].setAttribute('cx', x(slot)); dots[0].setAttribute('cy', y(expected));
-    dots[1].setAttribute('visibility', actual === null ? 'hidden' : 'visible');
-    dots[1].setAttribute('cx', x(slot)); dots[1].setAttribute('cy', y(actual ?? 0));
-    const anchor = x(slot) / width * bounds.width;
+    dots[0].setAttribute('cx', curveX(point.slot)); dots[0].setAttribute('cy', curveY(point.expected));
+    dots[1].setAttribute('visibility', point.actual === null ? 'hidden' : 'visible');
+    dots[1].setAttribute('cx', curveX(point.slot)); dots[1].setAttribute('cy', curveY(point.actual ?? 0));
+    const anchor = curveX(point.slot) / width * bounds.width;
     tooltip.style.left = `${Math.max(0, Math.min(bounds.width - tooltip.offsetWidth, anchor + 12))}px`;
     tooltip.style.top = `${Math.max(0, Math.min(bounds.height - tooltip.offsetHeight, event.clientY - bounds.top - tooltip.offsetHeight - 12))}px`;
   };
@@ -350,12 +376,12 @@ function renderWeeklyCurve() {
     return Math.max(0, Math.min(168, Math.round((px - left) / plotWidth * 168)));
   };
   const showSelection = (start, end) => {
-    const selection = root.querySelector('.curve-selection');
-    selection.setAttribute('x', x(start));
-    selection.setAttribute('width', Math.max(0, x(end) - x(start)));
-    selection.setAttribute('visibility', end > start ? 'visible' : 'hidden');
+    const rect = root.querySelector('.curve-selection');
+    rect.setAttribute('x', curveX(start));
+    rect.setAttribute('width', Math.max(0, curveX(end) - curveX(start)));
+    rect.setAttribute('visibility', end > start ? 'visible' : 'hidden');
   };
-  const restoreSelection = () => showSelection(hasSelection ? selectedStart : 0, hasSelection ? selectedEnd : 0);
+  const restoreSelection = () => showSelection(selection?.start ?? 0, selection?.end ?? 0);
   const cancelDrag = () => {
     const previous = drag;
     drag = null;
@@ -388,54 +414,51 @@ function renderWeeklyCurve() {
       restoreSelection();
       return;
     }
-    const start = data.startMs + Math.min(previous.start, slot) * 36e5;
-    const end = data.startMs + Math.max(previous.start, slot) * 36e5;
     showSelection(Math.min(previous.start, slot), Math.max(previous.start, slot));
     hideTooltip();
-    applyTimeRange(start, end);
+    applyTimeRange(startMs + Math.min(previous.start, slot) * 36e5, startMs + Math.max(previous.start, slot) * 36e5);
   };
   root.onpointerleave = () => { if (!drag) hideTooltip(); };
   root.onpointercancel = cancelDrag;
   root.onlostpointercapture = () => { if (drag) cancelDrag(); };
-
-  const delta = data.official - expectedNow;
-  summary.innerHTML = `<strong>${data.official.toFixed(0)}%</strong> ${tr("usado")} · ${tr("ideal")} <strong>${expectedNow.toFixed(0)}%</strong> · <span class="${delta > 0 ? 'negative' : 'positive'}">${delta > 0 ? '+' : ''}${delta.toFixed(0)} pp</span>`;
 }
 
-function renderTimeline() {
-  const timeline = document.getElementById('timeline'); const legend = document.getElementById('legend');
-  const rows = state.data.timeline;
-  const sessionsSelected = state.selectedSessions.size > 0;
-  const filtering = sessionsSelected || state.selectedProjects.size > 0;
-  const selectedRows = projectActivityRows().filter(row => sessionsSelected
-    ? state.selectedSessions.has(row.session_id)
-    : state.selectedProjects.has(row.project_id));
+function renderTimeline(provider = 'claude') {
+  const view = ACTIVITY_VIEWS[provider], data = view.data(), { sessions, projects } = state.selection[provider];
+  const components = activityComponents(provider);
+  const timeline = document.getElementById(view.timeline); const legend = document.getElementById(view.legend);
+  const rows = data?.timeline || [];
+  const sessionsSelected = sessions.size > 0;
+  const filtering = sessionsSelected || projects.size > 0;
+  const selectedRows = projectActivityRows(provider).filter(row => sessionsSelected
+    ? sessions.has(row.session_id)
+    : projects.has(row.project_id));
   const selectedBuckets = new Map();
   for (const row of selectedRows) {
     if (!selectedBuckets.has(row.bucket_ms)) selectedBuckets.set(row.bucket_ms, {});
     const values = selectedBuckets.get(row.bucket_ms);
-    for (const metric of TOKEN_COMPONENTS) values[metric.key] = (values[metric.key] || 0) + (row[metric.key] || 0);
+    for (const metric of components) values[metric.key] = (values[metric.key] || 0) + (row[metric.key] || 0);
   }
-  const selectedTotal = selectedRows.reduce((sum, row) => sum + TOKEN_COMPONENTS.reduce((n, metric) => n + (row[metric.key] || 0), 0), 0);
-  const total = state.data.totals.total_tokens;
-  document.getElementById('sessionSelectionSummary').textContent = filtering
-    ? `${sessionsSelected ? `${state.selectedSessions.size} ${tr('sessões selecionadas')}` : `${state.selectedProjects.size} ${tr('projetos selecionados')}`} · ${formatTokens(selectedTotal)} / ${formatTokens(total)} ${tr('processados')} · ${new Intl.NumberFormat(locale(), {style: 'percent', maximumFractionDigits: 1}).format(total ? selectedTotal / total : 0)} ${tr('do total no intervalo')} · ${tr('Restante esmaecido')}`
+  const selectedTotal = selectedRows.reduce((sum, row) => sum + components.reduce((n, metric) => n + (row[metric.key] || 0), 0), 0);
+  const total = data?.totals?.total_tokens || 0;
+  document.getElementById(view.summary).textContent = filtering
+    ? `${sessionsSelected ? `${sessions.size} ${tr('sessões selecionadas')}` : `${projects.size} ${tr('projetos selecionados')}`} · ${formatTokens(selectedTotal)} / ${formatTokens(total)} ${tr('processados')} · ${new Intl.NumberFormat(locale(), {style: 'percent', maximumFractionDigits: 1}).format(total ? selectedTotal / total : 0)} ${tr('do total no intervalo')} · ${tr('Restante esmaecido')}`
     : tr('Todas as sessões · selecione projetos ou sessões abaixo para comparar com o total.');
-  document.getElementById('clearSessionSelection').hidden = !filtering;
+  document.getElementById(view.clear).hidden = !filtering;
   const oldAxis = timeline.parentElement.querySelector('.axis'); if (oldAxis) oldAxis.remove();
   if (!rows.length) { timeline.innerHTML = `<div class="empty">${tr('Sem atividade neste intervalo.')}</div>`; legend.innerHTML = ''; return; }
-  legend.innerHTML = TOKEN_COMPONENTS.map(metric => `<span><i style="background:${metric.color}"></i>${metric.label}</span>`).join('');
+  legend.innerHTML = components.map(metric => `<span><i style="background:${metric.color}"></i>${metric.label}</span>`).join('');
   const byBucket = new Map();
   for (const row of rows) {
-    if (!byBucket.has(row.bucket_ms)) byBucket.set(row.bucket_ms, Object.fromEntries(TOKEN_COMPONENTS.map(metric => [metric.key, 0])));
+    if (!byBucket.has(row.bucket_ms)) byBucket.set(row.bucket_ms, Object.fromEntries(components.map(metric => [metric.key, 0])));
     const bucket = byBucket.get(row.bucket_ms);
-    for (const metric of TOKEN_COMPONENTS) bucket[metric.key] += row[metric.key] || 0;
+    for (const metric of components) bucket[metric.key] += row[metric.key] || 0;
   }
   const buckets = [...byBucket.entries()];
-  const bucketTotal = values => TOKEN_COMPONENTS.reduce((sum, metric) => sum + values[metric.key], 0);
+  const bucketTotal = values => components.reduce((sum, metric) => sum + values[metric.key], 0);
   const max = Math.max(...buckets.map(([, values]) => bucketTotal(values)), 1);
   timeline.innerHTML = buckets.map(([bucket, values]) => `<div class="column" title="${formatDate(bucket)} · ${formatTokens(bucketTotal(values))} ${tr("processados")}">
-    ${TOKEN_COMPONENTS.map(metric => {
+    ${components.map(metric => {
       const selected = filtering ? Math.min(values[metric.key], selectedBuckets.get(bucket)?.[metric.key] || 0) : values[metric.key];
       const segment = (value, muted) => `<i class="segment${muted ? ' segment-muted' : ''}" style="height:${value / max * 100}%;background:${metric.color}" title="${metric.label} · ${tr(muted ? 'Outras sessões' : filtering ? 'Seleção' : 'Todas as sessões')}: ${exact.format(value)} / ${exact.format(values[metric.key])}"></i>`;
       return segment(selected, false) + (filtering ? segment(values[metric.key] - selected, true) : '');
@@ -444,16 +467,17 @@ function renderTimeline() {
   timeline.insertAdjacentHTML('afterend', `<div class="axis"><span>${formatDate(buckets[0][0])}</span><span>${formatDate(buckets.at(-1)[0])}</span></div>`);
 }
 
-function projectActivityRows() {
-  const rows = state.data.session_timeline || [];
-  return state.selectedProjects.size ? rows.filter(row => state.selectedProjects.has(row.project_id)) : rows;
+function projectActivityRows(provider = 'claude') {
+  const rows = ACTIVITY_VIEWS[provider].data()?.session_timeline || [];
+  const { projects } = state.selection[provider];
+  return projects.size ? rows.filter(row => projects.has(row.project_id)) : rows;
 }
-function visibleClaudeSessions(rows = state.data.sessions) {
-  if (!state.selectedProjects.size) return rows;
+function visibleSessions(provider = 'claude', rows = ACTIVITY_VIEWS[provider].data()?.sessions || []) {
+  if (!state.selection[provider].projects.size) return rows;
   const scoped = new Map();
   const keys = ['messages', 'input_tokens', 'output_tokens', 'cache_creation_tokens',
     'cache_read_tokens', 'thinking_tokens', 'fresh_tokens', 'total_tokens'];
-  for (const row of projectActivityRows()) {
+  for (const row of projectActivityRows(provider)) {
     if (!scoped.has(row.session_id)) scoped.set(row.session_id, Object.fromEntries(keys.map(key => [key, 0])));
     const totals = scoped.get(row.session_id);
     for (const key of keys) totals[key] += row[key] || 0;
@@ -462,17 +486,27 @@ function visibleClaudeSessions(rows = state.data.sessions) {
     .map(row => ({...row, ...scoped.get(row.session_id)}))
     .sort((a, b) => b.total_tokens - a.total_tokens);
 }
-function pruneHiddenSessionSelection() {
-  if (!state.selectedProjects.size) return;
-  const visible = new Set(visibleClaudeSessions().map(row => row.session_id));
-  for (const id of state.selectedSessions) if (!visible.has(id)) state.selectedSessions.delete(id);
+function pruneHiddenSessionSelection(provider = 'claude') {
+  const { sessions, projects } = state.selection[provider];
+  if (!projects.size) return;
+  const visible = new Set(visibleSessions(provider).map(row => row.session_id));
+  for (const id of sessions) if (!visible.has(id)) sessions.delete(id);
+}
+function pruneSelection(provider) {
+  const data = ACTIVITY_VIEWS[provider].data(), { sessions, projects } = state.selection[provider];
+  const available = new Set((data?.sessions || []).map(row => row.session_id));
+  for (const id of sessions) if (!available.has(id)) sessions.delete(id);
+  const availableProjects = new Set((data?.projects || []).map(row => row.project_id));
+  for (const id of projects) if (!availableProjects.has(id)) projects.delete(id);
+  pruneHiddenSessionSelection(provider);
 }
 
 function renderRanking(id, rows, type, codex = false) {
+  const provider = codex ? 'codex' : 'claude', { sessions, projects } = state.selection[provider];
   const sourceRows = rows;
-  if (id === 'sessionList') rows = visibleClaudeSessions(rows);
+  if (type === 'session') rows = visibleSessions(provider, rows);
   const root = document.getElementById(id); const max = Math.max(...rows.map(x => x.total_tokens), 1);
-  const selectable = id === 'sessionList' || id === 'projects';
+  const selectable = type !== 'model';
   root.innerHTML = (type === 'model' ? rows.slice(0, 8) : rows).map((row, i) => {
     const name = type === 'model' ? shortModel(row.model) : row.project;
     const countLabel = codex ? tr('eventos de uso') : tr('respostas');
@@ -481,7 +515,7 @@ function renderRanking(id, rows, type, codex = false) {
       [tr('Base perfil'), row.fresh_tokens], ['Input', row.input_tokens], ['Output', row.output_tokens],
       [tr('Cache escrito'), row.cache_creation_tokens], [tr('Cache lido'), row.cache_read_tokens], ['Thinking', row.thinking_tokens],
     ].filter(([label]) => !codex || label !== tr('Cache escrito'));
-    const selected = selectable && (type === 'project' ? state.selectedProjects.has(row.project_id) : state.selectedSessions.has(row.session_id));
+    const selected = selectable && (type === 'project' ? projects.has(row.project_id) : sessions.has(row.session_id));
     const selectionLabel = tr('Destacar no gráfico') + ' · ' + name + ' · ' + (type === 'project' ? row.cwd : row.session_id?.slice(0, 8));
     return `<div class="rank-row${selectable ? ' selectable-session' : ''}${selected ? ' selected-session' : ''}">
       ${selectable ? `<label class="session-toggle" title="${esc(selectionLabel)}"><input type="checkbox" aria-label="${esc(selectionLabel)}" data-session-index="${sourceRows.findIndex(source => type === 'session' ? source.session_id === row.session_id : source.project_id === row.project_id)}" ${selected ? 'checked' : ''}><span> ${tr('Destacar no gráfico')} · ${esc(name)} · ${esc(type === 'project' ? row.cwd : row.session_id.slice(0, 8))}</span></label>` : ''}
@@ -509,41 +543,44 @@ for (const id of ['compactToggle', 'codexCompactToggle']) document.getElementByI
 });
 renderRankingMode();
 
-for (const [listId, toggle] of [['sessionList', toggleSession], ['projects', toggleProject]]) {
-  document.getElementById(listId).addEventListener('click', event => {
-    const row = event.target.closest('.selectable-session');
-    if (!row || event.target.closest('label')) return;
-    const checkbox = row.querySelector('input');
-    toggle(Number(checkbox.dataset.sessionIndex));
+for (const [provider, view] of Object.entries(ACTIVITY_VIEWS)) {
+  for (const [list, toggle] of [[view.sessions, toggleSession], [view.projects, toggleProject]]) {
+    document.getElementById(list).addEventListener('click', event => {
+      const row = event.target.closest('.selectable-session');
+      if (!row || event.target.closest('label')) return;
+      const checkbox = row.querySelector('input');
+      toggle(Number(checkbox.dataset.sessionIndex), provider);
+    });
+    document.getElementById(list).addEventListener('change', event => {
+      if (event.target.matches('input[data-session-index]')) toggle(Number(event.target.dataset.sessionIndex), provider);
+    });
+  }
+  document.getElementById(view.clear).addEventListener('click', () => {
+    state.selection[provider].sessions.clear(); state.selection[provider].projects.clear();
+    renderActivitySelection(provider);
   });
-  document.getElementById(listId).addEventListener('change', event => {
-    if (event.target.matches('input[data-session-index]')) toggle(Number(event.target.dataset.sessionIndex));
-  });
 }
-function renderActivitySelection() {
-  pruneHiddenSessionSelection();
-  renderTimeline();
-  renderRanking('sessionList', state.data.sessions, 'session');
-  renderRanking('projects', state.data.projects || [], 'project');
+function renderActivitySelection(provider = 'claude') {
+  const view = ACTIVITY_VIEWS[provider], data = view.data();
+  pruneHiddenSessionSelection(provider);
+  renderTimeline(provider);
+  renderRanking(view.sessions, data?.sessions || [], 'session', provider === 'codex');
+  renderRanking(view.projects, data?.projects || [], 'project', provider === 'codex');
 }
-function toggleSession(index) {
-  const id = state.data.sessions[index]?.session_id;
-  if (!id) return;
-  if (state.selectedSessions.has(id)) state.selectedSessions.delete(id);
-  else state.selectedSessions.add(id);
-  renderActivitySelection();
+function toggleSelection(kind, id, provider) {
+  const selected = state.selection[provider][kind];
+  if (selected.has(id)) selected.delete(id);
+  else selected.add(id);
+  renderActivitySelection(provider);
 }
-function toggleProject(index) {
-  const id = state.data.projects[index]?.project_id;
-  if (id === undefined) return;
-  if (state.selectedProjects.has(id)) state.selectedProjects.delete(id);
-  else state.selectedProjects.add(id);
-  renderActivitySelection();
+function toggleSession(index, provider = 'claude') {
+  const id = ACTIVITY_VIEWS[provider].data()?.sessions?.[index]?.session_id;
+  if (id) toggleSelection('sessions', id, provider);
 }
-document.getElementById('clearSessionSelection').addEventListener('click', () => {
-  state.selectedSessions.clear(); state.selectedProjects.clear();
-  renderActivitySelection();
-});
+function toggleProject(index, provider = 'claude') {
+  const id = ACTIVITY_VIEWS[provider].data()?.projects?.[index]?.project_id;
+  if (id !== undefined) toggleSelection('projects', id, provider);
+}
 
 function saveLanguage() {
   try { fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ language }) }).catch(() => {}); } catch {}

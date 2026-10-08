@@ -96,16 +96,16 @@ for (const initialView of ['both', 'claude', 'codex']) test(`${initialView}: sav
       {...originalSessionTimeline[0], project_id: '/tmp/other', input_tokens: 5, output_tokens: 5, cache_read_tokens: 20, fresh_tokens: 10, total_tokens: 30},
       originalSessionTimeline[1]];
     toggleProject(0)`, context);
-  assert.equal(vm.runInContext('visibleClaudeSessions()[0].total_tokens', context), 90);
+  assert.equal(vm.runInContext('visibleSessions()[0].total_tokens', context), 90);
   assert.match(node('sessionList').innerHTML, /title="90 processed"/);
   assert.match(node('sessionSelectionSummary').textContent, /37.5%/);
   vm.runInContext('toggleSession(0)', context);
   assert.match(node('sessionSelectionSummary').textContent, /37.5%/);
   vm.runInContext('toggleProject(1)', context);
-  assert.equal(vm.runInContext('visibleClaudeSessions().find(row => row.session_id === "test-session").total_tokens', context), 120);
+  assert.equal(vm.runInContext('visibleSessions().find(row => row.session_id === "test-session").total_tokens', context), 120);
   assert.match(node('sessionSelectionSummary').textContent, /50%/);
   node('clearSessionSelection').listeners.click();
-  assert.equal(vm.runInContext('visibleClaudeSessions()[0].total_tokens', context), 120);
+  assert.equal(vm.runInContext('visibleSessions()[0].total_tokens', context), 120);
   vm.runInContext('state.data.session_timeline = originalSessionTimeline; toggleProject(0)', context);
   assert.ok(!node('sessionList').innerHTML.includes('second-s'));
   assert.match(node('projects').innerHTML, /checked/);
@@ -128,21 +128,21 @@ for (const initialView of ['both', 'claude', 'codex']) test(`${initialView}: sav
   vm.runInContext('toggleProject(0)', context); // Only the second project remains selected.
   assert.ok(!node('sessionList').innerHTML.includes('test-ses'));
   assert.match(node('sessionList').innerHTML, /data-session-index="1"/);
-  assert.equal(vm.runInContext('state.selectedSessions.size', context), 0);
+  assert.equal(vm.runInContext('state.selection.claude.sessions.size', context), 0);
   node('sessionList').listeners.change({target: {matches: () => true, dataset: {sessionIndex: '1'}}});
-  assert.equal(vm.runInContext("state.selectedSessions.has('second-session')", context), true);
+  assert.equal(vm.runInContext("state.selection.claude.sessions.has('second-session')", context), true);
   node('compactToggle').listeners.click();
   assert.ok(!node('sessionList').innerHTML.includes('test-ses'));
   node('compactToggle').listeners.click();
   node('clearSessionSelection').listeners.click();
   assert.match(node('sessionList').innerHTML, /test-ses/);
   assert.match(node('sessionList').innerHTML, /second-s/);
-  assert.equal(vm.runInContext('state.selectedProjects.size + state.selectedSessions.size', context), 0);
+  assert.equal(vm.runInContext('state.selection.claude.projects.size + state.selection.claude.sessions.size', context), 0);
   assert.equal(node('timeline').innerHTML, totalChart);
   vm.runInContext('toggleProject(1); state.data.projects = [state.data.projects[0]]; renderClaude()', context);
-  assert.equal(vm.runInContext('state.selectedProjects.size', context), 0);
+  assert.equal(vm.runInContext('state.selection.claude.projects.size', context), 0);
   vm.runInContext('toggleSession(1); state.data.sessions = [state.data.sessions[0]]; renderClaude()', context);
-  assert.equal(vm.runInContext('state.selectedSessions.size', context), 0);
+  assert.equal(vm.runInContext('state.selection.claude.sessions.size', context), 0);
   node('viewCodex').listeners.click();
   assert.match(node('codexProjects').innerHTML, /&lt;script>/);
   assert.match(node('codexLimits').innerHTML, /40.0%/);
@@ -150,6 +150,25 @@ for (const initialView of ['both', 'claude', 'codex']) test(`${initialView}: sav
   assert.equal(vm.runInContext('paceFor({...state.codex.limits.limits[0], utilization: 0}, state.codex.activity.profile, state.codex.limits.fetched_at).projectedMs', context), null);
   assert.match(node('codexCurve').innerHTML, /<svg/);
   assert.ok(!node('codexSessions').innerHTML.includes('<script>'));
+  // Codex selection is independent of Claude and splits its own timeline.
+  vm.runInContext(`state.codex.activity = {...state.codex.activity,
+    totals: {...state.codex.activity.totals, total_tokens: 240},
+    sessions: [state.codex.activity.sessions[0], {...state.codex.activity.sessions[0], session_id: 'codex-second'}],
+    session_timeline: [state.codex.activity.session_timeline[0], {...state.codex.activity.session_timeline[0], session_id: 'codex-second'}]}; renderProviders()`, context);
+  const codexChart = node('codexTimeline').innerHTML;
+  assert.match(codexChart, /segment/);
+  assert.ok(!node('codexLegend').innerHTML.includes(vm.runInContext("tr('Escrita em cache')", context)));
+  vm.runInContext("toggleSession(0, 'codex')", context);
+  assert.match(node('codexSessionSelectionSummary').textContent, /50%/);
+  assert.match(node('codexTimeline').innerHTML, /segment-muted/);
+  assert.match(node('codexSessions').innerHTML, /checked/);
+  assert.equal(vm.runInContext('state.selection.claude.sessions.size', context), 0);
+  node('codexClearSessionSelection').listeners.click();
+  assert.equal(node('codexTimeline').innerHTML, codexChart);
+  node('codexProjects').listeners.change({target: {matches: () => true, dataset: {sessionIndex: '0'}}});
+  assert.equal(vm.runInContext('state.selection.codex.projects.size', context), 1);
+  assert.match(node('codexProjects').innerHTML, /checked/);
+  node('codexClearSessionSelection').listeners.click();
   node('language').listeners.change({ target: { value: 'pt-BR' } });
   node('paceMode').listeners.change({ target: { value: 'equal_weekdays' } });
   assert.match(node('codexLimits').innerHTML, /Seg–sex equilibrado/);
@@ -234,7 +253,7 @@ test('weekly curve: hover shows hourly values, latest official value and future 
     applyTimeRange(start, end) { applied.push({ start, end }); state.custom = { start, end }; },
   });
   const source = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
-  vm.runInContext(source.slice(source.indexOf('function renderWeeklyCurve()'), source.indexOf('function renderTimeline()')), context);
+  vm.runInContext(source.slice(source.indexOf('function renderWeeklyCurve()'), source.indexOf('function renderTimeline(')), context);
   vm.runInContext('renderWeeklyCurve()', context);
   const move = slot => root.onpointermove({ clientX: 10 + (48 + slot / 168 * 934) / 2, clientY: 140 });
   move(24);
@@ -289,5 +308,59 @@ test('weekly curve: hover shows hourly values, latest official value and future 
   assert.deepEqual(applied[2], { start: startMs, end: startMs + 12 * 36e5 });
   state.weeklyData = null;
   vm.runInContext('renderWeeklyCurve()', context);
+  assert.equal(root.onpointermove, null);
+});
+
+test('codex curve: hover shows snapshots and projection, drag filters the range', () => {
+  const element = () => ({ attrs: {}, style: {}, setAttribute(key, value) { this.attrs[key] = value; } });
+  const line = element(), dots = [element(), element()];
+  const hover = { ...element(), querySelector: () => line, querySelectorAll: () => dots };
+  const tooltip = { hidden: true, offsetWidth: 200, offsetHeight: 100, style: {} };
+  const svg = { getBoundingClientRect: () => ({ left: 10, top: 20, width: 500, height: 290 }) };
+  const selection = element(), applied = [];
+  let captured = null;
+  const root = {
+    querySelector: selector => ({ svg, '.curve-tooltip': tooltip, '.curve-hover': hover, '.curve-selection': selection })[selector],
+    setPointerCapture(id) { captured = id; },
+    hasPointerCapture(id) { return captured === id; },
+    releasePointerCapture() { captured = null; },
+  };
+  const note = {};
+  const now = Date.now(), reset = now + 72 * 36e5, startMs = reset - 168 * 36e5;
+  const limit = { key: 'codex:secondary', label: 'codex', bucket: 'codex', window_minutes: 10080, utilization: 40, resets_at: new Date(reset).toISOString() };
+  const sample = (slot, utilization) => ({ key: limit.key, resets_at: limit.resets_at, observed_ms: startMs + slot * 36e5, utilization });
+  const state = { codex: { activity: { ok: true }, limits: { ok: true, fetched_at: new Date(now).toISOString(), limits: [limit] } },
+    snapshots: { codex: [sample(48, 20), sample(96, 40)] } };
+  const context = vm.createContext({ state, Intl, Date,
+    document: { getElementById: id => id === 'codexCurve' ? root : note },
+    selectedProfileSlots: () => Array(168).fill(1 / 168),
+    paceFor: () => ({ expected: 30, projectionRatio: 1 }),
+    locale: () => 'pt-BR', tr: value => value, esc: value => value, formatDate: value => String(value), paceModeLabel: () => '',
+    applyTimeRange(start, end) { applied.push({ start, end }); state.custom = { start, end }; },
+  });
+  const app = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
+  vm.runInContext(app.slice(app.indexOf('const CURVE ='), app.indexOf('function renderTimeline(')), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../static/providers.js'), 'utf8'), context);
+  vm.runInContext('renderCodexCurve()', context);
+  assert.match(root.innerHTML, /curve-selection/);
+  const pointer = slot => ({ clientX: 10 + (48 + slot / 168 * 934) / 2, clientY: 140, pointerId: 1, button: 0, isPrimary: true });
+  root.onpointermove(pointer(48.2));
+  assert.match(tooltip.innerHTML, /Snapshot oficial: <b>20,0%/);
+  assert.equal(dots[1].attrs.visibility, 'visible');
+  root.onpointermove(pointer(120));
+  assert.match(tooltip.innerHTML, /Projeção: <b>81,4%/);
+  root.onpointermove(pointer(10));
+  assert.doesNotMatch(tooltip.innerHTML, /Snapshot oficial|Projeção|Diferença/);
+  assert.equal(dots[1].attrs.visibility, 'hidden');
+  root.onpointerdown(pointer(12));
+  root.onpointermove(pointer(24));
+  assert.equal(selection.attrs.visibility, 'visible');
+  root.onpointerup(pointer(24));
+  assert.deepEqual(applied[0], { start: startMs + 12 * 36e5, end: startMs + 24 * 36e5 });
+  assert.equal(captured, null);
+  vm.runInContext('renderCodexCurve()', context);
+  assert.match(root.innerHTML, /visibility="visible"/);
+  state.codex.limits.limits = [];
+  vm.runInContext('renderCodexCurve()', context);
   assert.equal(root.onpointermove, null);
 });
