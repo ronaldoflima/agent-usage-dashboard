@@ -115,6 +115,7 @@
       <div class="section-head"><div><p class="eyebrow">CODEX · RITMO SEMANAL</p><h2>Curva esperada × uso observado</h2></div></div>
       <div class="curve-legend"><span><i class="expected-dot"></i>Curva esperada</span><span><i class="actual-dot"></i>Snapshots oficiais</span><span><i class="projection-dot"></i>Projeção</span></div>
       <div id="codexCurve" class="weekly-curve" role="img" aria-label="Codex weekly usage"></div>
+      <p class="curve-note">Arraste no gráfico para filtrar um período. Use os botões de período para desfazer.</p>
       <p id="codexCurveNote" class="curve-note"></p>
     </section>
     </div>
@@ -122,8 +123,28 @@
     <section class="codex-section metrics-section" data-provider="codex" aria-labelledby="codexActivityTitle">
       <div class="section-head"><div><p class="eyebrow">CODEX · LOCAL</p><h2 id="codexActivityTitle">Atividade por modelo e sessão</h2></div><p class="chart-note">Somente registros deste dispositivo. Cache já está incluído na entrada do Codex e é separado abaixo.</p></div>
       <div id="codexMetrics" class="metric-grid"></div>
+      <section class="panel chart-panel">
+        <div class="section-head">
+          <div><p class="eyebrow">LINHA DO TEMPO</p><h2>Composição da atividade</h2></div>
+          <p class="chart-note">Input sem cache, output e leitura de cache. Thinking já está contido em output.</p>
+        </div>
+        <div class="session-controls"><p id="codexSessionSelectionSummary" aria-live="polite"></p><button id="codexClearSessionSelection" type="button" hidden>Limpar seleção</button></div>
+        <div id="codexLegend" class="legend"></div>
+        <div id="codexTimeline" class="timeline"></div>
+      </section>
       <div class="ranking-toolbar"><button id="codexCompactToggle" type="button" aria-pressed="false">Listagem compacta</button></div>
-      <div class="split"><div class="ranking-stack"><article class="panel ranking"><h2>Volume por projeto</h2><div id="codexProjects"></div></article><article class="panel ranking"><h2>Volume por modelo</h2><div id="codexModels"></div></article></div><article class="panel ranking"><h2>Volume por sessão</h2><div id="codexSessions"></div></article></div>
+      <div class="split">
+        <div class="ranking-stack">
+          <article class="panel ranking"><h2>Volume por projeto</h2>
+            <p class="session-help">Clique em um ou vários projetos para destacar sua participação no gráfico acima e filtrar as sessões ao lado.</p>
+            <div id="codexProjects"></div></article>
+          <article class="panel ranking"><h2>Volume por modelo</h2><div id="codexModels"></div></article>
+        </div>
+        <article class="panel ranking"><h2>Volume por sessão</h2>
+          <p class="session-help">Clique em uma ou várias sessões para destacar sua participação no gráfico acima.</p>
+          <p class="session-help">Com projetos selecionados, os valores das sessões e o gráfico consideram apenas a atividade nesses projetos.</p>
+          <div id="codexSessions"></div></article>
+      </div>
     </section>
 
     <section class="metrics-section" data-provider="claude" aria-labelledby="metricsTitle">

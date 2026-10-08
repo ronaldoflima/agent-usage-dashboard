@@ -99,6 +99,8 @@ function renderProviders() {
     ['Output', 'output_tokens'], [tr('Leitura de cache'), 'cache_read_tokens'], ['Thinking', 'thinking_tokens']];
   document.getElementById('codexMetrics').innerHTML = metrics.map(([label, key]) =>
     `<article class="metric panel"><span>${label}</span><strong>${activity?.ok ? formatTokens(totals[key]) : '—'}</strong><small>${key === 'thinking_tokens' ? tr('parte do output; não somar novamente') : tr('no intervalo selecionado')}</small></article>`).join('');
+  pruneSelection('codex');
+  renderTimeline('codex');
   renderRanking('codexProjects', activity?.projects || [], 'project', true);
   renderRanking('codexModels', activity?.models || [], 'model', true);
   renderRanking('codexSessions', activity?.sessions || [], 'session', true);
@@ -107,6 +109,7 @@ function renderProviders() {
 function renderCodexCurve() {
   const root = document.getElementById('codexCurve');
   const note = document.getElementById('codexCurveNote');
+  root.onpointermove = root.onpointerdown = root.onpointerup = root.onpointerleave = root.onpointercancel = root.onlostpointercapture = null;
   const { activity, limits } = state.codex || {};
   const limit = limits?.limits?.find(item => item.window_minutes === 10080 && item.bucket === 'codex')
     || limits?.limits?.find(item => item.window_minutes === 10080);
@@ -116,32 +119,43 @@ function renderCodexCurve() {
     return;
   }
   const reset = Date.parse(limit.resets_at), start = reset - 168 * 36e5;
+  const slotOf = ms => (ms - start) / 36e5;
   const profile = activity?.profile?.ok ? activity.profile : null;
   const slots = profile ? selectedProfileSlots(profile, start) : Array(168).fill(1 / 168);
-  const samples = quotaSamples(state.snapshots?.codex, limit);
-  const width = 600, height = 270, left = 38, bottom = 235;
-  const x = ms => left + (ms - start) / (reset - start) * 545;
-  const y = percent => bottom - Math.max(0, Math.min(100, percent)) * 2.1;
-  const expected = [{ ms: start, pct: 0 }];
-  let sum = 0;
-  slots.forEach((weight, index) => { sum += weight * 100; expected.push({ ms: start + (index + 1) * 36e5, pct: sum }); });
-  const path = points => points.map((point, i) => `${i ? 'L' : 'M'}${x(point.ms).toFixed(2)},${y(point.pct).toFixed(2)}`).join(' ');
+  const samples = quotaSamples(state.snapshots?.codex, limit).map(sample => ({ ...sample, slot: slotOf(sample.observed_ms), value: sample.utilization }));
+  const expected = expectedCurvePoints(slots);
   // Break observed lines at long gaps and downward corrections; no invented history.
   const observedPath = samples.map((sample, i) => {
     const prev = samples[i - 1];
     const connected = prev && sample.observed_ms - prev.observed_ms <= 30 * 60000 && sample.utilization >= prev.utilization;
-    return `${connected ? 'L' : 'M'}${x(sample.observed_ms).toFixed(2)},${y(sample.utilization).toFixed(2)}`;
+    return `${connected ? 'L' : 'M'} ${curveX(sample.slot).toFixed(1)} ${curveY(sample.value).toFixed(1)}`;
   }).join(' ');
   const pace = paceFor(limit, profile, limits.fetched_at);
-  const observedMs = Date.parse(limits.fetched_at);
-  const projection = pace && observedMs >= start && observedMs < reset
-    ? [{ ms: observedMs, pct: limit.utilization }, ...expected.filter(p => p.ms > observedMs).map(p => ({ ms: p.ms, pct: limit.utilization + (p.pct - pace.expected) * pace.projectionRatio }))] : [];
-  const grid = [0, 25, 50, 75, 100].map(p => `<line x1="${left}" y1="${y(p)}" x2="583" y2="${y(p)}" class="curve-grid-line"/><text x="30" y="${y(p) + 4}" text-anchor="end" class="curve-axis-label">${p}%</text>`).join('');
-  const labels = [0, 2, 4, 6].map(day => {
-    const ms = start + day * 24 * 36e5;
-    return `<text x="${x(ms)}" y="258" class="curve-axis-label">${esc(new Date(ms).toLocaleDateString(locale(), { weekday: 'short', day: 'numeric' }))}</text>`;
-  }).join('');
-  root.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="presentation">${grid}${labels}<path d="${path(expected)}" class="curve-expected-line"/><path d="${observedPath}" class="curve-actual-line"/><path d="${path(projection)}" class="curve-projection-line"/>${samples.map(s => `<circle cx="${x(s.observed_ms)}" cy="${y(s.utilization)}" r="3" class="curve-now-point"><title>${esc(formatDate(s.observed_ms))} · ${s.utilization}%</title></circle>`).join('')}</svg>`;
+  const observedSlot = slotOf(Date.parse(limits.fetched_at));
+  const projection = pace && observedSlot >= 0 && observedSlot < 168
+    ? [{ slot: observedSlot, value: limit.utilization }, ...expected.filter(p => p.slot > observedSlot).map(p => ({ slot: p.slot, value: limit.utilization + (p.value - pace.expected) * pace.projectionRatio }))] : [];
+  const selection = curveSelection(start);
+  root.innerHTML = `<svg viewBox="0 0 ${CURVE.width} ${CURVE.height}" preserveAspectRatio="none" aria-hidden="true">
+    ${curveFrame(start, selection)}
+    <path d="${curvePath(expected)}" class="curve-expected-line"/>
+    <path d="${observedPath}" class="curve-actual-line"/>
+    <path d="${curvePath(projection)}" class="curve-projection-line"/>
+    ${samples.map(s => `<circle cx="${curveX(s.slot)}" cy="${curveY(s.value)}" r="3" class="curve-now-point"><title>${esc(formatDate(s.observed_ms))} · ${s.utilization}%</title></circle>`).join('')}
+    ${CURVE_HOVER}
+  </svg><div class="curve-tooltip" role="tooltip" hidden></div>`;
+  const { date, percent } = curveFormatters();
+  bindCurveInteraction(root, start, selection, raw => {
+    const nearest = samples.reduce((best, sample) => !best || Math.abs(sample.slot - raw) < Math.abs(best.slot - raw) ? sample : best, null);
+    const snapshot = nearest && Math.abs(nearest.slot - raw) < .5 ? nearest : null;
+    const slot = snapshot ? snapshot.slot : Math.max(0, Math.min(168, Math.round(raw)));
+    const projected = !snapshot && projection.length && slot > observedSlot;
+    const actual = snapshot ? snapshot.value : projected ? curveInterpolate(projection, slot) : null;
+    const value = curveInterpolate(expected, slot);
+    return { slot, expected: value, actual, html: `<strong>${esc(date.format(new Date(start + slot * 36e5)))}</strong>
+      <span>${tr('Curva esperada')}: <b>${percent.format(value)}%</b></span>
+      ${actual === null ? '' : `<span>${tr(snapshot ? 'Snapshot oficial' : 'Projeção')}: <b>${percent.format(actual)}%</b></span>
+      <span>${tr('Diferença')}: <b>${actual > value ? '+' : ''}${percent.format(actual - value)} pp</b></span>`}` };
+  });
   note.textContent = `${limit.label} · ${profile ? `${paceModeLabel()} · ${profile.sample_hours} ${tr('horas com dados')}` : tr('Estimativa linear')} · ${samples.length} ${tr('snapshots neste ciclo')}. ${tr('Sem interpolação em lacunas maiores que 30 min. Projeção não é medição.')}`;
 }
 

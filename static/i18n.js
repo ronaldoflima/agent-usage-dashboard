@@ -106,6 +106,8 @@ const DYNAMIC = {
   'usado': ['used', 'utilizado'], 'ideal': ['target', 'objetivo'], 'Sem atividade neste intervalo.': ['No activity in this range.', 'Sin actividad en este intervalo.'], 'processados': ['processed', 'procesados'], 'respostas': ['responses', 'respuestas'], 'Base perfil': ['Profile baseline', 'Base del perfil'], 'Cache escrito': ['Cache written', 'Caché escrita'], 'Cache lido': ['Cache read', 'Caché leída'], 'Sem dados.': ['No data.', 'Sin datos.'],
   'Arraste no gráfico para filtrar um período. Use os botões de período para desfazer.': ['Drag on the chart to filter a period. Use the period buttons to reset.', 'Arrastra en el gráfico para filtrar un período. Usa los botones de período para restablecer.'],
   'Diferença': ['Difference', 'Diferencia'],
+  'Snapshot oficial': ['Official snapshot', 'Captura oficial'],
+  'Input sem cache, output e leitura de cache. Thinking já está contido em output.': ['Uncached input, output and cache reads. Thinking is already included in output.', 'Entrada sin caché, salida y lectura de caché. Thinking ya está incluido en la salida.'],
   'Sessão': ['Session', 'Sesión'], 'Semanal': ['Weekly', 'Semanal'], 'modelo': ['model', 'modelo']
 };
 for (const [key, [english, spanish]] of Object.entries(DYNAMIC)) { TRANSLATIONS.en[key] = english; TRANSLATIONS.es[key] = spanish; }
