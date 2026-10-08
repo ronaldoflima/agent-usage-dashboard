@@ -187,6 +187,8 @@ code { color: #c9b9a8; }
 .language-select select { padding-left: 34px; }
 .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; background: transparent; border-color: transparent; color: var(--muted); border-radius: 8px; }
 .icon-button:hover { background: var(--panel-2); color: var(--ink); border-color: var(--line); }
+.github-link { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border: 1px solid var(--accent); border-radius: 8px; color: var(--accent); font-size: 13px; font-weight: 600; text-decoration: none; }
+.github-link:hover { background: var(--accent); color: var(--bg, #fff); }
 .icon-button:disabled { opacity: .45; cursor: wait; }
 .icon-button[aria-busy="true"] svg { animation: sync-spin 1s linear infinite; }
 .header-toolbar :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
