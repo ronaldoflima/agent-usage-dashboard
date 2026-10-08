@@ -20,9 +20,10 @@ tabs retain their own collection settings until reloaded.
 
 ## Install
 
-Tested on Ubuntu/Debian and Arch. One command clones the repository into
+Works on Ubuntu/Debian, Arch and macOS. One command clones the repository into
 `~/.local/share/agent-usage-dashboard`, installs Python 3.10+ and git if they are
-missing (asking before using `sudo`), and asks how you want to run it:
+missing (apt/pacman with `sudo`, or Homebrew on macOS, asking first), and asks
+how you want to run it:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ronaldoflima/agent-usage-dashboard/main/install.sh | bash
@@ -32,29 +33,41 @@ From an existing checkout, `./install.sh` uses that checkout instead of cloning.
 Pass options to skip the questions:
 
 ```bash
-./install.sh --mode systemd --port 8787 --timezone America/Sao_Paulo --linger
+./install.sh --mode service --port 8787 --timezone America/Sao_Paulo --linger
 curl -fsSL https://raw.githubusercontent.com/ronaldoflima/agent-usage-dashboard/main/install.sh | bash -s -- --mode launcher
 ```
 
 | Mode | What it does | When to use |
 |---|---|---|
-| `systemd` (default) | User service `agent-usage-dashboard` with `Restart=always`, enabled at login | Desktops and servers; required for the in-app update button to restart the server automatically |
+| `service` (default) | Linux: systemd user service `agent-usage-dashboard` (`Restart=always`). macOS: launchd agent `io.github.agent-usage-dashboard` (`KeepAlive`, `RunAtLoad`). Starts at login | Desktops and servers; required for the in-app update button to restart the server automatically |
 | `launcher` | Only installs the `agent-usage-dashboard` command in `~/.local/bin` | You prefer to start it yourself, in tmux, or with `nohup` |
 | `foreground` | Installs the launcher and starts the server in the current terminal | Trying it out |
 
-Other options: `--host` (default `127.0.0.1`), `--dir` (checkout path),
-`--linger` (keep the systemd service running after logout and start it at boot,
-useful on servers/VPS), `--pacebar` (link `scripts/pacebar` into `~/.local/bin`),
-`--yes` (no package-install prompt) and `--uninstall` (removes service and
-launcher, keeps the checkout and `.cache/`). The timezone defaults to the
-system's; the `codex` binary found in `PATH` at install time is passed as
-`--codex-bin`, since systemd services do not inherit your shell `PATH`.
-Rerun the installer to change port, timezone or mode.
+`systemd` and `launchd` are accepted as aliases of `service`. Other options:
+`--host` (default `127.0.0.1`), `--dir` (checkout path), `--linger` (Linux only:
+keep the systemd service running after logout and start it at boot, useful on
+servers/VPS), `--pacebar` (link `scripts/pacebar` into `~/.local/bin`), `--yes`
+(no package-install prompt) and `--uninstall` (removes service and launcher,
+keeps the checkout and `.cache/`). The timezone defaults to the system's; the
+`codex` binary found in `PATH` at install time is passed as `--codex-bin`, since
+services do not inherit your shell `PATH`. Rerun the installer to change port,
+timezone or mode.
 
 ```bash
+# Linux (systemd)
 systemctl --user status agent-usage-dashboard
 journalctl --user -u agent-usage-dashboard -f
+
+# macOS (launchd)
+launchctl print gui/$(id -u)/io.github.agent-usage-dashboard
+tail -f ~/Library/Logs/agent-usage-dashboard.log
+launchctl kickstart -k gui/$(id -u)/io.github.agent-usage-dashboard
 ```
+
+The in-app update restarts the server only when it runs under a supervisor that
+brings it back: systemd (detected via `INVOCATION_ID`) or any process manager
+that sets `USAGE_DASHBOARD_SUPERVISED=1` (the launchd agent does). Otherwise it
+asks you to restart manually.
 
 Without the installer, run it directly with Python (no dependencies to install):
 
