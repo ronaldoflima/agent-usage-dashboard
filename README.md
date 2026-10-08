@@ -51,7 +51,9 @@ servers/VPS), `--pacebar` (link `scripts/pacebar` into `~/.local/bin`), `--yes`
 keeps the checkout and `.cache/`). The timezone defaults to the system's; the
 `codex` binary found in `PATH` at install time is passed as `--codex-bin`, since
 services do not inherit your shell `PATH`. Rerun the installer to change port,
-timezone or mode.
+timezone or mode, or to update: an existing checkout on `main` without local
+changes is fast-forwarded to `origin/main` and the service restarted
+(`--no-update` skips it).
 
 ```bash
 # Linux (systemd)

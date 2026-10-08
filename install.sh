@@ -28,6 +28,7 @@ LINGER=0
 PACEBAR=0
 ASSUME_YES=0
 UNINSTALL=0
+UPDATE=1
 
 usage() {
   cat <<EOF
@@ -43,6 +44,7 @@ Usage: install.sh [options]
                      ~/.local/share/agent-usage-dashboard when piped from curl)
   --linger           Linux: keep the systemd user service running without an active login
   --pacebar          link scripts/pacebar into ~/.local/bin
+  --no-update        reuse an existing checkout as is (by default it is fast-forwarded to origin/main)
   -y, --yes          do not ask before installing missing packages
   --uninstall        remove the service and launcher (keeps the checkout and .cache/)
   -h, --help         show this help
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --pacebar) PACEBAR=1; shift ;;
     -y|--yes) ASSUME_YES=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
+    --no-update) UPDATE=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -163,6 +166,29 @@ detect_timezone() {
   echo "${tz:-UTC}"
 }
 
+update_checkout() {
+  local git=(git -C "$INSTALL_DIR") branch before
+  branch="$("${git[@]}" branch --show-current 2>/dev/null || true)"
+  if [[ "$branch" != main ]]; then
+    warn "Checkout is on '${branch:-detached HEAD}', not main; skipping update."
+    return
+  fi
+  if [[ -n "$("${git[@]}" status --porcelain --untracked-files=no)" ]]; then
+    warn "Checkout has local changes; skipping update."
+    return
+  fi
+  before="$("${git[@]}" rev-parse --short HEAD)"
+  if ! "${git[@]}" fetch --quiet --tags origin || ! "${git[@]}" merge --ff-only --quiet origin/main; then
+    warn "Could not fast-forward to origin/main; keeping $before."
+    return
+  fi
+  if [[ "$("${git[@]}" rev-parse --short HEAD)" == "$before" ]]; then
+    info "Checkout already up to date ($before)"
+  else
+    info "Updated checkout: $before -> $("${git[@]}" rev-parse --short HEAD)"
+  fi
+}
+
 resolve_checkout() {
   local here=""
   here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || here=""
@@ -172,6 +198,7 @@ resolve_checkout() {
   INSTALL_DIR="${INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/$SERVICE}"
   if [[ -d "$INSTALL_DIR/.git" ]]; then
     info "Using checkout at $INSTALL_DIR"
+    if [[ $UPDATE -eq 1 ]]; then update_checkout; fi
   else
     info "Cloning $REPO_URL into $INSTALL_DIR"
     mkdir -p "$(dirname "$INSTALL_DIR")"
