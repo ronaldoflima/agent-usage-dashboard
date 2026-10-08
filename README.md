@@ -231,6 +231,46 @@ in the cards use the browser's timezone; workday patterns use the profile's
 configured timezone. The fixed 168-hour model approximates weeks spanning a
 daylight-saving transition.
 
+## Terminal pace indicator
+
+`scripts/pacebar` displays Claude's weekly usage relative to the expected pace
+in one line, for example `ritmo 1.12x ▲ (ideal 40%)`. It requires only Python's
+standard library, like the dashboard.
+
+For a ccstatusline custom-command widget, set `commandPath` to the absolute
+path of `scripts/pacebar`. The command reads the statusline JSON from stdin
+(`rate_limits.seven_day.used_percentage` and `resets_at`, in Unix seconds).
+Running it directly in an interactive terminal instead reads the dashboard's
+cached Claude limits:
+
+```bash
+./scripts/pacebar
+```
+
+The expected curve comes from `/api/profile` at `http://127.0.0.1:8787`.
+Set `CLAUDE_USAGE_URL` to use another dashboard address. The profile is cached
+for one hour; if unavailable, the command uses a linear curve and prefixes the
+ratio with `~`. It uses the historical mode independently of the browser's
+selected pace mode. Ratios above `1.08x` show `▲`, below `0.82x` show `▽`, and
+otherwise show `=`; exhausted quota shows `■`. Missing or expired quota windows
+produce no output.
+
+The direct-terminal mode does not refresh limits and currently compares the
+cached utilization with the current time, rather than the snapshot timestamp.
+Use **Sync now** in the dashboard to populate or refresh its quota cache.
+
+To keep an existing personal command path, link it to the repository copy
+(replace `/path/to/agent-usage-dashboard` with your checkout path):
+
+```bash
+mkdir -p "$HOME/pessoal/scripts"
+ln -s /path/to/agent-usage-dashboard/scripts/pacebar "$HOME/pessoal/scripts/pacebar"
+```
+
+If that path already contains a script, back it up before creating the link.
+The checkout must remain at the linked path. Personal ccstatusline setup scripts
+can continue using that command path.
+
 ## Metrics
 
 The interface deliberately separates two kinds of data:
