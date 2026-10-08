@@ -602,3 +602,24 @@ document.getElementById('syncInterval').addEventListener('change', event => {
 document.getElementById('syncNow').addEventListener('click', () => load(null, true, true));
 load(); scheduleSync();
 setInterval(() => { render(); renderSyncTimestamp(); }, 60_000);
+
+async function checkForUpdate() {
+  const link = document.querySelector('.github-link');
+  const parse = tag => (String(tag).match(/^v?(\d+)\.(\d+)\.(\d+)/) || []).slice(1).map(Number);
+  const newer = (a, b) => { for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i]; return false; };
+  try {
+    const { version } = await (await fetch('/api/health')).json();
+    const local = parse(version);
+    if (!link || local.length !== 3) return;
+    const tags = await (await fetch('https://api.github.com/repos/ronaldoflima/agent-usage-dashboard/tags?per_page=30')).json();
+    const latest = tags.map(t => t.name).filter(n => parse(n).length === 3).sort((a, b) => newer(parse(a), parse(b)) ? -1 : 1)[0];
+    if (!latest || !newer(parse(latest), local)) return;
+    const badge = document.createElement('span');
+    badge.className = 'update-badge';
+    badge.textContent = `update ${latest}`;
+    link.append(badge);
+    link.title = `GitHub — ${version} → ${latest}`;
+    link.href = `https://github.com/ronaldoflima/agent-usage-dashboard/releases/tag/${latest}`;
+  } catch {}
+}
+checkForUpdate();
