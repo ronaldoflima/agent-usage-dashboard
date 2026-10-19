@@ -37,6 +37,17 @@ class QuotaCacheTest(unittest.TestCase):
             client.get()
             self.assertEqual(request.call_count, 1)
 
+    def test_repeated_429_backs_off_exponentially_up_to_cap(self):
+        client = QuotaClient(Path('/unused'))
+        error = urllib.error.HTTPError('https://example.test', 429, 'Too Many Requests', {}, None)
+        credentials = '{"claudeAiOauth":{"accessToken":"test-token"}}'
+        delays = []
+        with patch('pathlib.Path.read_text', return_value=credentials), patch('app.urllib.request.urlopen', side_effect=error):
+            for _ in range(5):
+                client.retry_at = 0.0
+                delays.append(client.get(force=True)['retry_after_seconds'])
+        self.assertEqual(delays, [300, 600, 1200, 1800, 1800])
+
 
 class QuotaCredentialsTest(unittest.TestCase):
     def test_reads_credentials_file_when_present(self):

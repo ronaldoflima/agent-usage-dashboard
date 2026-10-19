@@ -409,6 +409,7 @@ class QuotaClient:
         self.cached: dict[str, Any] | None = None
         self.cached_at = 0.0
         self.retry_at = 0.0
+        self.failures = 0
         self.last_error = None
         self.lock = threading.Lock()
 
@@ -431,10 +432,13 @@ class QuotaClient:
                 self.cached_at = time.monotonic()
                 self.last_error = None
                 self.retry_at = 0.0
+                self.failures = 0
             except (OSError, KeyError, ValueError, urllib.error.URLError) as error:
                 self.last_error = str(error)
                 delay = self.ttl_seconds
                 if isinstance(error, urllib.error.HTTPError) and error.code == 429:
+                    delay = min(self.ttl_seconds * 2 ** self.failures, 1800)
+                    self.failures += 1
                     retry_after = error.headers.get("Retry-After", "") if error.headers else ""
                     if retry_after.isdigit():
                         delay = max(delay, int(retry_after))

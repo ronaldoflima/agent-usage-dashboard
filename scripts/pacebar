@@ -9,28 +9,43 @@
 import json
 import os
 import sys
-import tempfile
 import time
-import urllib.request
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 WEEK_H = 168
 MIN_PROFILE_HOURS = 168
 CACHE_TTL = 3600
+OUT_TTL = 60
 BASE_URL = os.environ.get("CLAUDE_USAGE_URL", "http://127.0.0.1:8787").rstrip("/")
 URL = BASE_URL + "/api/profile"
 LABELS = {"en": ("pace", "expected"), "pt-BR": ("ritmo", "ideal"), "es": ("ritmo", "ideal")}
-CACHE = os.path.join(tempfile.gettempdir(), f"pacebar.{os.getuid()}.profile.json")
+TMP = os.environ.get("TMPDIR") or "/tmp"
+CACHE = os.path.join(TMP, f"pacebar.{os.getuid()}.profile.json")
+OUT_CACHE = os.path.join(TMP, f"pacebar.{os.getuid()}.out.json")
+
+
+def write_atomic(path, obj):
+    tmp = f"{path}.{os.getpid()}"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(obj, fh)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def load_profile():
+    stale = None
     try:
+        with open(CACHE) as fh:
+            stale = json.load(fh) or None
         if time.time() - os.path.getmtime(CACHE) < CACHE_TTL:
-            with open(CACHE) as fh:
-                return json.load(fh) or None
+            return stale
     except (OSError, ValueError):
         pass
+    import urllib.request
     profile = None
     try:
         with urllib.request.urlopen(URL, timeout=1) as resp:
@@ -39,11 +54,8 @@ def load_profile():
             profile = data
     except Exception:
         pass
-    try:
-        with open(CACHE, "w") as fh:
-            json.dump(profile, fh)
-    except OSError:
-        pass
+    profile = profile or stale
+    write_atomic(CACHE, profile)
     return profile
 
 
@@ -52,6 +64,7 @@ def aligned_slots(profile, start):
     hours = profile.get("sample_hours")
     reliability = max(0.0, min(1.0, hours / MIN_PROFILE_HOURS)) if isinstance(hours, (int, float)) else 1.0
     slots = [reliability * v + (1 - reliability) / WEEK_H for v in weekly["slots"]]
+    from zoneinfo import ZoneInfo
     local = start.astimezone(ZoneInfo(weekly["timezone"]))
     offset = (local.weekday() * 24 + local.hour + local.minute / 60 + local.second / 3600
               - weekly["reset_weekday"] * 24 - weekly["reset_hour"] + WEEK_H) % WEEK_H
@@ -67,6 +80,7 @@ def expected_pct(slots, elapsed_h):
 
 
 def dashboard_limits():
+    import urllib.request
     try:
         with urllib.request.urlopen(BASE_URL + "/api/limits", timeout=3) as resp:
             limits = json.load(resp).get("limits") or []
@@ -93,6 +107,16 @@ def main():
     start = float(resets) - WEEK_H * 3600
     if not start <= now < float(resets):
         return
+    key = [float(used), float(resets)]
+    try:
+        with open(OUT_CACHE) as fh:
+            cached = json.load(fh)
+        if cached.get("key") == key and now - cached.get("at", 0) < OUT_TTL:
+            print(cached["out"])
+            return
+    except (OSError, ValueError, AttributeError):
+        pass
+    from datetime import datetime, timezone
     elapsed_h = max(1 / 60, (now - start) / 3600)
     profile = load_profile()
     pace_label, expected_label = LABELS.get((profile or {}).get("language"), LABELS["en"])
@@ -112,7 +136,9 @@ def main():
         arrow = "▽"
     else:
         arrow = "="
-    print(f"{pace_label} {mark}{ratio:.2f}x {arrow} ({expected_label} {expected:.0f}%)")
+    out = f"{pace_label} {mark}{ratio:.2f}x {arrow} ({expected_label} {expected:.0f}%)"
+    write_atomic(OUT_CACHE, {"key": key, "at": now, "out": out})
+    print(out)
 
 
 if __name__ == "__main__":
