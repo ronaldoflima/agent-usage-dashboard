@@ -165,7 +165,9 @@ and reset cycles; it never connects different cycles.
 
 Claude retains its labeled token-based reconstruction and overlays official
 sample points when available. Its reconstructed line is anchored to the last
-official read time, not the page-load time. The personal expected profiles still
+official read time, not the page-load time. A dashed projection extends from that
+observation using the selected expected curve and the same conservative pace
+calculation as the limit cards. The personal expected profiles still
 use tokens, **not learned quota weights**; snapshot-based profile training is a
 future improvement requiring sufficiently complete cycles of observations.
 

@@ -234,8 +234,11 @@ test('weekly curve: hover shows hourly values, latest official value and future 
     applyTimeRange(start, end) { applied.push({ start, end }); state.custom = { start, end }; },
   });
   const source = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../static/pace-profile.js'), 'utf8'), context);
   vm.runInContext(source.slice(source.indexOf('function renderWeeklyCurve()'), source.indexOf('function renderTimeline()')), context);
   vm.runInContext('renderWeeklyCurve()', context);
+  assert.match(root.innerHTML, /<path d="M 316\.2 158\.8 L [^"]+" class="curve-projection-line"/);
+  assert.match(root.innerHTML, /class="curve-projection-line"/);
   const move = slot => root.onpointermove({ clientX: 10 + (48 + slot / 168 * 934) / 2, clientY: 140 });
   move(24);
   assert.equal(tooltip.hidden, false);

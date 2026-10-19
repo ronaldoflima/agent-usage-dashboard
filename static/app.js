@@ -245,6 +245,11 @@ function renderWeeklyCurve() {
     expectedPoints.push({ slot: slot + 1, value: expectedSum });
   }
 
+  const pace = weeklyPaceProjection(slots, data.official, elapsedHours, data.startMs);
+  const projectionPoints = pace && data.observedMs >= data.startMs && elapsedHours < 168
+    ? [{ slot: elapsedHours, value: data.official }, ...expectedPoints.filter(point => point.slot > elapsedHours)
+      .map(point => ({ slot: point.slot, value: data.official + (point.value - pace.expected) * pace.projectionRatio }))] : [];
+
   const actualPoints = [{ slot: 0, value: 0 }];
   let actualSum = 0;
   for (let slot = 0; slot < elapsedSlots; slot++) {
@@ -285,6 +290,7 @@ function renderWeeklyCurve() {
     <path d="${areaPath}" fill="url(#actualArea)"/>
     <path d="${path(expectedPoints)}" class="curve-expected-line"/>
     <path d="${actualPath}" class="curve-actual-line"/>
+    <path d="${path(projectionPoints)}" class="curve-projection-line"/>
     <line x1="${currentX}" y1="${top}" x2="${currentX}" y2="${height - bottom}" class="curve-now-line"/>
     <circle cx="${currentX}" cy="${currentY}" r="6" class="curve-now-point"/>
     <circle cx="${currentX}" cy="${y(expectedNow)}" r="4" class="curve-expected-point"/>
